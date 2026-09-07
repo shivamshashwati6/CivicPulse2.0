@@ -115,6 +115,7 @@ export function AdminPage() {
   const [realtimeConnected, setRealtimeConnected] = useState(false);
   const [activeTooltipId, setActiveTooltipId] = useState(null);
   const [mapView, setMapView] = useState('hotspots'); // 'issues', 'hotspots', 'heatmap'
+  const [fetchError, setFetchError] = useState(null);
 
   // Detect Urban Hotspots dynamically from active complaints dataset
   const hotspots = useMemo(() => {
@@ -130,8 +131,14 @@ export function AdminPage() {
   // Fetch ALL complaints directly from issueService (syncs Supabase and local storage queue)
   const fetchComplaintsDirectly = useCallback(async () => {
     setLoading(true);
+    setFetchError(null);
     try {
-      const { data: allComplaints } = await issueService.fetchAllComplaints();
+      const { data: allComplaints, error } = await issueService.fetchAllComplaints();
+
+      if (error) {
+        console.warn('Database query notice:', error);
+        setFetchError(error.message || 'Database query error');
+      }
 
       // Deduplicate by unique complaint ID
       const uniqueMap = new Map();
@@ -144,6 +151,7 @@ export function AdminPage() {
       setComplaints(Array.from(uniqueMap.values()));
     } catch (err) {
       console.error('Direct complaint fetch exception:', err);
+      setFetchError(err.message || 'Failed to connect to municipal database.');
       toast.error('Failed to fetch complaints from database.');
     } finally {
       setLoading(false);
@@ -894,6 +902,17 @@ export function AdminPage() {
           <div className="p-8 text-center space-y-3">
             <Loader2 className="w-8 h-8 text-blue-600 dark:text-blue-400 animate-spin mx-auto" />
             <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Loading municipal priority queue...</p>
+          </div>
+        ) : fetchError ? (
+          <div className="p-8 text-center space-y-3 bg-amber-50/50 dark:bg-amber-950/20 border-y border-amber-200 dark:border-amber-900/50">
+            <div className="w-10 h-10 rounded-2xl bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400 flex items-center justify-center mx-auto">
+              <RefreshCw className="w-5 h-5" />
+            </div>
+            <h4 className="text-sm font-bold text-amber-900 dark:text-amber-300">Database Synchronization Notice</h4>
+            <p className="text-xs text-amber-700 dark:text-amber-400 max-w-md mx-auto">{fetchError}</p>
+            <Button onClick={fetchComplaintsDirectly} variant="outline" className="text-xs">
+              <RefreshCw className="w-3.5 h-3.5 mr-1.5" /> Retry Sync
+            </Button>
           </div>
         ) : prioritySortedComplaints.length === 0 ? (
           <div className="p-12 text-center space-y-3">

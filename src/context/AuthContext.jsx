@@ -18,7 +18,10 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [session, setSession] = useState(null);
   const [isAdmin, setIsAdmin] = useState(() => {
-    return sessionStorage.getItem('civicpulse_is_admin') === 'true';
+    return (
+      localStorage.getItem('civicpulse_is_admin') === 'true' ||
+      sessionStorage.getItem('civicpulse_is_admin') === 'true'
+    );
   });
   const [loading, setLoading] = useState(true);
 
@@ -36,8 +39,18 @@ export const AuthProvider = ({ children }) => {
           setSession(currentSession);
           setUser(currentSession?.user || null);
 
-          if (currentSession?.user?.email?.includes('admin')) {
+          const isStoredAdmin =
+            localStorage.getItem('civicpulse_is_admin') === 'true' ||
+            sessionStorage.getItem('civicpulse_is_admin') === 'true';
+
+          const isUserAdmin =
+            isStoredAdmin ||
+            Boolean(currentSession?.user?.email?.includes('admin')) ||
+            currentSession?.user?.user_metadata?.role === 'admin';
+
+          if (isUserAdmin) {
             setIsAdmin(true);
+            localStorage.setItem('civicpulse_is_admin', 'true');
             sessionStorage.setItem('civicpulse_is_admin', 'true');
           }
         }
@@ -57,8 +70,19 @@ export const AuthProvider = ({ children }) => {
       if (mounted) {
         setSession(currentSession);
         setUser(currentSession?.user || null);
-        if (currentSession?.user?.email?.includes('admin')) {
+
+        const isStoredAdmin =
+          localStorage.getItem('civicpulse_is_admin') === 'true' ||
+          sessionStorage.getItem('civicpulse_is_admin') === 'true';
+
+        const isUserAdmin =
+          isStoredAdmin ||
+          Boolean(currentSession?.user?.email?.includes('admin')) ||
+          currentSession?.user?.user_metadata?.role === 'admin';
+
+        if (isUserAdmin) {
           setIsAdmin(true);
+          localStorage.setItem('civicpulse_is_admin', 'true');
           sessionStorage.setItem('civicpulse_is_admin', 'true');
         }
         setLoading(false);
@@ -73,14 +97,25 @@ export const AuthProvider = ({ children }) => {
     };
   }, []);
 
+  const setAdminFlags = () => {
+    setIsAdmin(true);
+    localStorage.setItem('civicpulse_is_admin', 'true');
+    sessionStorage.setItem('civicpulse_is_admin', 'true');
+  };
+
+  const clearAdminFlags = () => {
+    setIsAdmin(false);
+    localStorage.removeItem('civicpulse_is_admin');
+    sessionStorage.removeItem('civicpulse_is_admin');
+  };
+
   const login = async (email, password) => {
     const res = await authService.signIn({ email, password });
     if (res.session) {
       setSession(res.session);
       setUser(res.user || res.session.user);
-      if (email.includes('admin')) {
-        setIsAdmin(true);
-        sessionStorage.setItem('civicpulse_is_admin', 'true');
+      if (email.toLowerCase().includes('admin')) {
+        setAdminFlags();
       }
     }
     return res;
@@ -97,12 +132,9 @@ export const AuthProvider = ({ children }) => {
 
   const logout = async () => {
     const res = await authService.signOut();
-    if (!res.error) {
-      setSession(null);
-      setUser(null);
-      setIsAdmin(false);
-      sessionStorage.removeItem('civicpulse_is_admin');
-    }
+    setSession(null);
+    setUser(null);
+    clearAdminFlags();
     return res;
   };
 
@@ -112,8 +144,7 @@ export const AuthProvider = ({ children }) => {
   const adminLogin = async ({ email, password, passcode }) => {
     // 1. Passcode Authentication (Fast Admin Authorization)
     if (passcode && (passcode === 'ADMIN123' || passcode === 'CIVIC_ADMIN_2026')) {
-      setIsAdmin(true);
-      sessionStorage.setItem('civicpulse_is_admin', 'true');
+      setAdminFlags();
       return { success: true, error: null };
     }
 
@@ -126,8 +157,7 @@ export const AuthProvider = ({ children }) => {
       if (res.session) {
         setSession(res.session);
         setUser(res.user || res.session.user);
-        setIsAdmin(true);
-        sessionStorage.setItem('civicpulse_is_admin', 'true');
+        setAdminFlags();
         return { success: true, error: null };
       }
     }
@@ -138,9 +168,11 @@ export const AuthProvider = ({ children }) => {
   /**
    * Dedicated Admin Logout
    */
-  const adminLogout = () => {
-    setIsAdmin(false);
-    sessionStorage.removeItem('civicpulse_is_admin');
+  const adminLogout = async () => {
+    clearAdminFlags();
+    await authService.signOut().catch(() => {});
+    setSession(null);
+    setUser(null);
   };
 
   return (

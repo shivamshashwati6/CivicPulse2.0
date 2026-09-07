@@ -72,6 +72,9 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='complaints' AND column_name='recommended_department') THEN
     ALTER TABLE public.complaints ADD COLUMN recommended_department TEXT DEFAULT 'Review Required';
   END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE constraint_name='fk_complaints_profiles') THEN
+    ALTER TABLE public.complaints ADD CONSTRAINT fk_complaints_profiles FOREIGN KEY (user_id) REFERENCES public.profiles(id) ON DELETE SET NULL;
+  END IF;
 END $$;
 
 -- 4. Spatial GIST Index for High-Performance PostGIS Proximity Queries
