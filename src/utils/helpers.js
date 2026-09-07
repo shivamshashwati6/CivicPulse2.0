@@ -265,18 +265,31 @@ export function detectUrbanHotspots(complaints = [], radiusMeters = 400, categor
     const isEmerging = recentCount / count >= 0.5 && count >= 2;
     const primaryAddress = cluster.complaints.find((c) => c.address)?.address || 'Urban Sector Zone';
 
+    // Calculate Max Severity in cluster
+    const severities = cluster.complaints.map((c) =>
+      (c.severity || c.severity_score || 'Medium').toLowerCase()
+    );
+    let maxSeverity = 'Low';
+    if (severities.includes('critical')) maxSeverity = 'Critical';
+    else if (severities.includes('high')) maxSeverity = 'High';
+    else if (severities.includes('medium')) maxSeverity = 'Medium';
+
     return {
       id: `hotspot-${index}-${cluster.centerLat.toFixed(4)}-${cluster.centerLng.toFixed(4)}`,
       center: [cluster.centerLat, cluster.centerLng],
+      centerLat: cluster.centerLat,
+      centerLng: cluster.centerLng,
       complaintCount: count,
       complaints: cluster.complaints,
       mainCategory,
       categoriesCount,
       avgImpactScore,
+      maxSeverity,
       intensityScore,
       intensityLabel,
       color,
       fillColor,
+      strokeColor: color,
       radiusPx,
       isEmerging,
       address: primaryAddress,

@@ -32,6 +32,9 @@ import {
   Zap,
   Eye,
   Building2,
+  AlertTriangle,
+  TrendingUp,
+  AlertCircle,
 } from 'lucide-react';
 import { PageHeader } from '../../components/common/PageHeader';
 import { Button } from '../../components/ui/Button';
@@ -656,7 +659,7 @@ export function AdminPage() {
                         </div>
 
                         <p className="text-[10px] text-slate-500 italic">
-                          Centered near Lat: {h.centerLat.toFixed(4)}, Lng: {h.centerLng.toFixed(4)}
+                          Centered near Lat: {Number(h.centerLat || h.center?.[0] || 0).toFixed(4)}, Lng: {Number(h.centerLng || h.center?.[1] || 0).toFixed(4)}
                         </p>
 
                         <button
