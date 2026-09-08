@@ -449,6 +449,13 @@ export const issueService = {
             id,
             image_url
           ),
+          status_history (
+            id,
+            old_status,
+            new_status,
+            updated_at,
+            updated_by
+          ),
           profiles (
             id,
             full_name,
@@ -466,6 +473,13 @@ export const issueService = {
             complaint_images (
               id,
               image_url
+            ),
+            status_history (
+              id,
+              old_status,
+              new_status,
+              updated_at,
+              updated_by
             )
           `)
           .order('created_at', { ascending: false });

@@ -11,6 +11,9 @@ import {
   Tooltip,
   Cell,
   CartesianGrid,
+  LineChart,
+  Line,
+  Legend,
 } from 'recharts';
 import {
   Layers,
@@ -35,6 +38,11 @@ import {
   AlertTriangle,
   TrendingUp,
   AlertCircle,
+  Clock,
+  ShieldAlert,
+  Info,
+  BarChart3,
+  Calendar,
 } from 'lucide-react';
 import { PageHeader } from '../../components/common/PageHeader';
 import { Button } from '../../components/ui/Button';
@@ -44,6 +52,7 @@ import { ISSUE_CATEGORIES, MUNICIPAL_DEPARTMENTS } from '../../utils/constants';
 import { calculateUrbanImpactScore, detectUrbanHotspots, getRecommendedDepartment } from '../../utils/helpers';
 import { supabase } from '../../services/supabaseClient';
 import { issueService } from '../../services/issueService';
+import { slaService, formatDurationHours } from '../../services/slaService';
 import { useToast } from '../../hooks/useToast';
 import { useTheme } from '../../hooks/useTheme';
 
@@ -117,21 +126,12 @@ export function AdminPage() {
   const [updatingId, setUpdatingId] = useState(null);
   const [realtimeConnected, setRealtimeConnected] = useState(false);
   const [activeTooltipId, setActiveTooltipId] = useState(null);
+  const [activeInfoModal, setActiveInfoModal] = useState(null); // 'response' | 'resolution' | 'sla'
   const [mapView, setMapView] = useState('hotspots'); // 'issues', 'hotspots', 'heatmap'
+  const [chartView, setChartView] = useState('category'); // 'category', 'trend'
   const [fetchError, setFetchError] = useState(null);
 
-  // Detect Urban Hotspots dynamically from active complaints dataset
-  const hotspots = useMemo(() => {
-    return detectUrbanHotspots(complaints, 400, categoryFilter);
-  }, [complaints, categoryFilter]);
-
-  // Hotspot Summary Metrics
-  const totalHotspots = hotspots.length;
-  const criticalHotspotCount = hotspots.filter((h) => h.intensityLabel === 'Critical').length;
-  const highImpactHotspotCount = hotspots.filter((h) => h.intensityLabel === 'High').length;
-  const emergingZoneCount = hotspots.filter((h) => h.isEmerging).length;
-
-  // Fetch ALL complaints directly from issueService (syncs Supabase and local storage queue)
+  // Fetch ALL complaints directly from issueService (includes status_history audit relation)
   const fetchComplaintsDirectly = useCallback(async () => {
     setLoading(true);
     setFetchError(null);
@@ -164,14 +164,14 @@ export function AdminPage() {
   useEffect(() => {
     fetchComplaintsDirectly();
 
+    // Subscribe to both complaints and status_history table realtime events
     const channel = supabase
       .channel('admin-realtime-complaints')
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'complaints' },
         async (payload) => {
-          console.log('Realtime postgres_changes event in AdminPage:', payload);
-
+          console.log('Realtime complaints event in AdminPage:', payload);
           if (payload.eventType === 'INSERT' && payload.new?.id) {
             try {
               const { data: newItem } = await issueService.fetchIssueById(payload.new.id);
@@ -190,12 +190,33 @@ export function AdminPage() {
               });
             }
           } else if (payload.eventType === 'UPDATE' && payload.new?.id) {
-            setComplaints((prev) =>
-              prev.map((c) => (c.id === payload.new.id ? { ...c, ...payload.new } : c))
-            );
+            try {
+              const { data: updatedItem } = await issueService.fetchIssueById(payload.new.id);
+              if (updatedItem) {
+                setComplaints((prev) =>
+                  prev.map((c) => (c.id === payload.new.id ? { ...c, ...updatedItem } : c))
+                );
+              } else {
+                setComplaints((prev) =>
+                  prev.map((c) => (c.id === payload.new.id ? { ...c, ...payload.new } : c))
+                );
+              }
+            } catch {
+              setComplaints((prev) =>
+                prev.map((c) => (c.id === payload.new.id ? { ...c, ...payload.new } : c))
+              );
+            }
           } else if (payload.eventType === 'DELETE' && payload.old?.id) {
             setComplaints((prev) => prev.filter((c) => c.id !== payload.old.id));
           }
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'status_history' },
+        async (payload) => {
+          console.log('Realtime status_history event in AdminPage:', payload);
+          fetchComplaintsDirectly();
         }
       )
       .subscribe((status, err) => {
@@ -215,7 +236,10 @@ export function AdminPage() {
   const handleStatusChange = async (complaintId, newStatus) => {
     setUpdatingId(complaintId);
     try {
-      const { error } = await issueService.updateComplaintStatus(complaintId, newStatus);
+      const currentComplaint = complaints.find((c) => c.id === complaintId);
+      const oldStatus = currentComplaint ? currentComplaint.status || 'Pending' : 'Pending';
+
+      const { error } = await issueService.updateComplaintStatus(complaintId, newStatus, oldStatus);
 
       if (error) {
         toast.error(`Update failed: ${error.message}`);
@@ -264,80 +288,79 @@ export function AdminPage() {
     }
   };
 
-  // Stats Calculations
-  const totalReports = complaints.length;
-  const criticalCount = complaints.filter(
-    (c) => (c.severity || c.severity_score || '').toLowerCase() === 'critical'
-  ).length;
-  const pendingCount = complaints.filter(
-    (c) => (c.status || '').toLowerCase() === 'pending'
-  ).length;
-  const inProgressCount = complaints.filter(
-    (c) => (c.status || '').toLowerCase() === 'in progress'
-  ).length;
-  const resolvedCount = complaints.filter(
-    (c) => (c.status || '').toLowerCase() === 'resolved'
-  ).length;
+  // --------------------------------------------------------------------------
+  // FILTER INTEGRATION & REAL-TIME SLA ANALYTICS CALCULATIONS
+  // --------------------------------------------------------------------------
 
-  const avgResolutionTime = '3.8 Hours';
+  // 1. Filter complaints based on Search, Category, Department, Status, and Severity
+  const filteredComplaints = useMemo(() => {
+    return complaints.filter((c) => {
+      const matchesStatus =
+        statusFilter === 'all' || (c.status || '').toLowerCase() === statusFilter.toLowerCase();
 
-  // Active Department Workload Calculations (Smart Routing Summary - Part 8)
-  const departmentWorkload = useMemo(() => {
-    const counts = {
-      'Public Works Department': 0,
-      'Waste Management Department': 0,
-      'Electrical / Street Lighting Department': 0,
-      'Water & Sewerage Department': 0,
-      'Review Required': 0,
-    };
+      const matchesSeverity =
+        severityFilter === 'all' ||
+        (c.severity || c.severity_score || '').toLowerCase() === severityFilter.toLowerCase();
 
-    complaints.forEach((c) => {
-      const status = (c.status || '').toLowerCase();
-      if (status !== 'resolved') {
-        const dept = c.recommended_department || getRecommendedDepartment(c.category);
-        counts[dept] = (counts[dept] || 0) + 1;
-      }
+      const matchesCategory =
+        categoryFilter === 'all' || (c.category || '').toLowerCase() === categoryFilter.toLowerCase();
+
+      const complaintDept = c.recommended_department || getRecommendedDepartment(c.category);
+      const matchesDepartment =
+        departmentFilter === 'all' || complaintDept.toLowerCase() === departmentFilter.toLowerCase();
+
+      const matchesSearch =
+        (c.title || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (c.description || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (c.address || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (c.profiles?.email || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (c.category || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+        complaintDept.toLowerCase().includes(searchQuery.toLowerCase());
+
+      return matchesStatus && matchesSeverity && matchesCategory && matchesDepartment && matchesSearch;
     });
+  }, [complaints, statusFilter, severityFilter, categoryFilter, departmentFilter, searchQuery]);
 
-    return counts;
-  }, [complaints]);
+  // 2. Dynamic SLA & Performance Analytics over filtered complaints
+  const filteredAnalytics = useMemo(() => {
+    return slaService.calculateSlaAnalytics(filteredComplaints);
+  }, [filteredComplaints]);
 
-  // Category Distribution for Recharts
+  // 3. Department Performance Breakdown (Filtered)
+  const departmentPerformance = useMemo(() => {
+    return slaService.calculateDepartmentPerformance(filteredComplaints);
+  }, [filteredComplaints]);
+
+  // 4. Category Performance Breakdown (Filtered)
+  const categoryPerformance = useMemo(() => {
+    return slaService.calculateCategoryPerformance(filteredComplaints);
+  }, [filteredComplaints]);
+
+  // 5. Time Trend Data (Filtered)
+  const timeTrendData = useMemo(() => {
+    return slaService.calculateTimeTrendData(filteredComplaints);
+  }, [filteredComplaints]);
+
+  // Detect Urban Hotspots dynamically from active complaints dataset
+  const hotspots = useMemo(() => {
+    return detectUrbanHotspots(filteredComplaints, 400, categoryFilter);
+  }, [filteredComplaints, categoryFilter]);
+
+  // Hotspot Summary Metrics
+  const totalHotspots = hotspots.length;
+  const criticalHotspotCount = hotspots.filter((h) => h.intensityLabel === 'Critical').length;
+  const highImpactHotspotCount = hotspots.filter((h) => h.intensityLabel === 'High').length;
+  const emergingZoneCount = hotspots.filter((h) => h.isEmerging).length;
+
+  // Category Chart Data for BarChart
   const categoryChartData = useMemo(() => {
     const counts = {};
-    complaints.forEach((c) => {
+    filteredComplaints.forEach((c) => {
       const cat = c.category || 'General';
       counts[cat] = (counts[cat] || 0) + 1;
     });
     return Object.entries(counts).map(([name, value]) => ({ name, value }));
-  }, [complaints]);
-
-  // Filter complaints based on Search, Category, Department, Status, and Severity
-  const filteredComplaints = complaints.filter((c) => {
-    const matchesStatus =
-      statusFilter === 'all' || (c.status || '').toLowerCase() === statusFilter.toLowerCase();
-
-    const matchesSeverity =
-      severityFilter === 'all' ||
-      (c.severity || c.severity_score || '').toLowerCase() === severityFilter.toLowerCase();
-
-    const matchesCategory =
-      categoryFilter === 'all' || (c.category || '').toLowerCase() === categoryFilter.toLowerCase();
-
-    const complaintDept = c.recommended_department || getRecommendedDepartment(c.category);
-    const matchesDepartment =
-      departmentFilter === 'all' || complaintDept.toLowerCase() === departmentFilter.toLowerCase();
-
-    const matchesSearch =
-      (c.title || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (c.description || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (c.address || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (c.profiles?.email || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (c.category || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-      complaintDept.toLowerCase().includes(searchQuery.toLowerCase());
-
-    return matchesStatus && matchesSeverity && matchesCategory && matchesDepartment && matchesSearch;
-  });
+  }, [filteredComplaints]);
 
   // Priority Queue Table sorting (Urban Impact Score: 100 -> 0)
   const prioritySortedComplaints = useMemo(() => {
@@ -351,14 +374,14 @@ export function AdminPage() {
 
   // City Map Center
   const mapCenter = useMemo(() => {
-    const valid = complaints.find((c) => c.latitude && c.longitude);
+    const valid = filteredComplaints.find((c) => c.latitude && c.longitude);
     if (valid) return [valid.latitude, valid.longitude];
     return [28.6139, 77.2090];
-  }, [complaints]);
+  }, [filteredComplaints]);
 
   const mapMarkers = useMemo(() => {
-    return complaints.filter((c) => c.latitude && c.longitude);
-  }, [complaints]);
+    return filteredComplaints.filter((c) => c.latitude && c.longitude);
+  }, [filteredComplaints]);
 
   const getSeverityBadgeColor = (sev) => {
     switch ((sev || '').toLowerCase()) {
@@ -379,7 +402,7 @@ export function AdminPage() {
       {/* Tactical Header */}
       <PageHeader
         title="Authority Dashboard & Command Center"
-        description="Tactical real-time GIS spatial monitoring, municipal priority queue, and AI dispatch management."
+        description="Real-time municipal GIS monitoring, dynamic SLA performance analytics, and automated department dispatch."
         badge={
           <div className="flex items-center gap-2">
             <Badge variant="indigo">Municipal Command Authority</Badge>
@@ -398,97 +421,246 @@ export function AdminPage() {
             className="text-slate-700 dark:text-slate-300 bg-white/80 dark:bg-slate-800/50 border-slate-200/80 dark:border-slate-700/80 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer shadow-xs"
           >
             <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
-            Sync
+            Sync Data
           </Button>
         }
       />
 
-      {/* Stats Cards */}
+      {/* DYNAMIC REAL-TIME SLA KPI CARDS */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Total Complaints */}
+        {/* KPI 1: Total Complaints */}
         <div className="p-5 rounded-2xl bg-white/80 border border-slate-200/80 shadow-sm dark:bg-slate-900/60 dark:backdrop-blur-xl dark:border dark:border-slate-800/80 dark:shadow-[0_8px_32px_0_rgba(0,0,0,0.37)] hover:dark:border-blue-500/40 hover:dark:shadow-[0_0_20px_rgba(59,130,246,0.15)] transition-all duration-300 space-y-2">
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">Total Complaints</span>
+            <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">Total Reports</span>
             <div className="w-9 h-9 rounded-xl bg-blue-100 dark:bg-blue-600/20 text-blue-600 dark:text-blue-400 flex items-center justify-center border border-blue-200 dark:border-blue-500/30">
               <Layers className="w-4 h-4" />
             </div>
           </div>
-          <div className="text-3xl font-bold text-blue-600 dark:text-blue-400">{loading ? '...' : totalReports}</div>
-          <p className="text-[11px] text-slate-500 dark:text-slate-400">Recorded across city sectors</p>
+          <div className="text-3xl font-bold text-blue-600 dark:text-blue-400">
+            {loading ? '...' : filteredAnalytics.totalComplaints}
+          </div>
+          <p className="text-[11px] text-slate-500 dark:text-slate-400">
+            {filteredAnalytics.resolvedCount} resolved &bull; {filteredAnalytics.inProgressCount} in progress
+          </p>
         </div>
 
-        {/* Critical Severity Count */}
-        <div className="p-5 rounded-2xl bg-white/80 border border-red-200/80 shadow-sm dark:bg-slate-900/60 dark:backdrop-blur-xl dark:border dark:border-red-500/30 dark:shadow-[0_8px_32px_0_rgba(0,0,0,0.37)] hover:dark:border-red-500/60 hover:dark:shadow-[0_0_20px_rgba(239,68,68,0.15)] transition-all duration-300 space-y-2 relative overflow-hidden">
-          <div className="absolute top-0 right-0 w-24 h-24 bg-red-500/10 rounded-full blur-2xl pointer-events-none" />
+        {/* KPI 2: Average Response Time */}
+        <div className="p-5 rounded-2xl bg-white/80 border border-amber-200/80 shadow-sm dark:bg-slate-900/60 dark:backdrop-blur-xl dark:border dark:border-amber-500/30 dark:shadow-[0_8px_32px_0_rgba(0,0,0,0.37)] hover:dark:border-amber-500/60 hover:dark:shadow-[0_0_20px_rgba(245,158,11,0.15)] transition-all duration-300 space-y-2 relative">
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-red-700 dark:text-red-400">Critical Hazards</span>
-            <div className="w-9 h-9 rounded-xl bg-red-100 dark:bg-red-500/10 text-red-600 dark:text-red-400 flex items-center justify-center border border-red-200 dark:border-red-500/30">
-              <Flame className="w-4 h-4" />
+            <div className="flex items-center gap-1.5">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-amber-700 dark:text-amber-400">Avg Response Time</span>
+              <button
+                type="button"
+                onClick={() => setActiveInfoModal(activeInfoModal === 'response' ? null : 'response')}
+                className="text-amber-500 hover:text-amber-700 dark:hover:text-amber-300 cursor-pointer p-0.5"
+                title="View Response Time Definition"
+              >
+                <HelpCircle className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <div className="w-9 h-9 rounded-xl bg-amber-100 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 flex items-center justify-center border border-amber-200 dark:border-amber-500/30">
+              <Clock className="w-4 h-4" />
             </div>
           </div>
-          <div className="text-3xl font-bold text-red-600 dark:text-red-400">{loading ? '...' : criticalCount}</div>
-          <p className="text-[11px] text-red-600/80 dark:text-red-300">Immediate dispatch required</p>
-        </div>
-
-        {/* Resolved Count */}
-        <div className="p-5 rounded-2xl bg-white/80 border border-emerald-200/80 shadow-sm dark:bg-slate-900/60 dark:backdrop-blur-xl dark:border dark:border-emerald-500/30 dark:shadow-[0_8px_32px_0_rgba(0,0,0,0.37)] hover:dark:border-emerald-500/60 hover:dark:shadow-[0_0_20px_rgba(16,185,129,0.15)] transition-all duration-300 space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-400">Resolved Reports</span>
-            <div className="w-9 h-9 rounded-xl bg-emerald-100 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center border border-emerald-200 dark:border-emerald-500/30">
-              <CheckCircle2 className="w-4 h-4" />
-            </div>
+          <div className="text-3xl font-bold text-amber-600 dark:text-amber-400">
+            {loading ? '...' : filteredAnalytics.avgResponseTimeFormatted}
           </div>
-          <div className="text-3xl font-bold text-emerald-600 dark:text-emerald-400">{loading ? '...' : resolvedCount}</div>
-          <p className="text-[11px] text-emerald-600/80 dark:text-emerald-300">Completed municipal tickets</p>
+          <p className="text-[11px] text-amber-700/80 dark:text-amber-300">
+            Creation to first "In Progress" status
+          </p>
+
+          {/* Response Time Tooltip Modal */}
+          {activeInfoModal === 'response' && (
+            <div className="absolute left-2 top-14 z-50 w-72 p-3 rounded-2xl bg-slate-900 text-white shadow-xl border border-slate-700 text-xs space-y-2 animate-in fade-in zoom-in-95">
+              <div className="flex items-center justify-between border-b border-slate-800 pb-1.5 font-bold">
+                <span className="text-amber-400 flex items-center gap-1">
+                  <Info className="w-3.5 h-3.5" /> Response Time Metric
+                </span>
+                <button
+                  onClick={() => setActiveInfoModal(null)}
+                  className="text-slate-400 hover:text-white"
+                >
+                  &times;
+                </button>
+              </div>
+              <p className="text-[11px] text-slate-300 leading-relaxed">
+                Calculated strictly as time elapsed from <strong>Complaint Creation</strong> to the <strong>First transition to "In Progress"</strong>.
+              </p>
+              <div className="p-2 rounded-lg bg-slate-800 text-[10px] text-slate-400 font-mono">
+                Complaint Created &rarr; First In Progress &rarr; Response Time
+              </div>
+            </div>
+          )}
         </div>
 
-        {/* Average Resolution Time */}
-        <div className="p-5 rounded-2xl bg-white/80 border border-indigo-200/80 shadow-sm dark:bg-slate-900/60 dark:backdrop-blur-xl dark:border dark:border-slate-800/80 dark:shadow-[0_8px_32px_0_rgba(0,0,0,0.37)] hover:dark:border-blue-500/40 hover:dark:shadow-[0_0_20px_rgba(59,130,246,0.15)] transition-all duration-300 space-y-2">
+        {/* KPI 3: Average Resolution Time (REPLACES HARDCODED 3.8 Hours) */}
+        <div className="p-5 rounded-2xl bg-white/80 border border-indigo-200/80 shadow-sm dark:bg-slate-900/60 dark:backdrop-blur-xl dark:border dark:border-slate-800/80 dark:shadow-[0_8px_32px_0_rgba(0,0,0,0.37)] hover:dark:border-blue-500/40 hover:dark:shadow-[0_0_20px_rgba(59,130,246,0.15)] transition-all duration-300 space-y-2 relative">
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-indigo-700 dark:text-indigo-300">Avg Resolution Time</span>
+            <div className="flex items-center gap-1.5">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-indigo-700 dark:text-indigo-300">Avg Resolution Time</span>
+              <button
+                type="button"
+                onClick={() => setActiveInfoModal(activeInfoModal === 'resolution' ? null : 'resolution')}
+                className="text-indigo-500 hover:text-indigo-700 dark:hover:text-indigo-300 cursor-pointer p-0.5"
+                title="View Resolution Time Definition"
+              >
+                <HelpCircle className="w-3.5 h-3.5" />
+              </button>
+            </div>
             <div className="w-9 h-9 rounded-xl bg-indigo-100 dark:bg-indigo-600/20 text-indigo-600 dark:text-indigo-400 flex items-center justify-center border border-indigo-200 dark:border-indigo-500/30">
               <Activity className="w-4 h-4" />
             </div>
           </div>
-          <div className="text-3xl font-bold text-indigo-600 dark:text-indigo-300">{avgResolutionTime}</div>
-          <p className="text-[11px] text-indigo-600/80 dark:text-indigo-300">SLA metric target: &lt; 6.0 hrs</p>
+          <div className="text-3xl font-bold text-indigo-600 dark:text-indigo-300">
+            {loading ? '...' : filteredAnalytics.avgResolutionTimeFormatted}
+          </div>
+          <p className="text-[11px] text-indigo-600/80 dark:text-indigo-300">
+            Creation to first "Resolved" status
+          </p>
+
+          {/* Resolution Time Tooltip Modal */}
+          {activeInfoModal === 'resolution' && (
+            <div className="absolute left-2 top-14 z-50 w-72 p-3 rounded-2xl bg-slate-900 text-white shadow-xl border border-slate-700 text-xs space-y-2 animate-in fade-in zoom-in-95">
+              <div className="flex items-center justify-between border-b border-slate-800 pb-1.5 font-bold">
+                <span className="text-indigo-400 flex items-center gap-1">
+                  <Info className="w-3.5 h-3.5" /> Resolution Time Metric
+                </span>
+                <button
+                  onClick={() => setActiveInfoModal(null)}
+                  className="text-slate-400 hover:text-white"
+                >
+                  &times;
+                </button>
+              </div>
+              <p className="text-[11px] text-slate-300 leading-relaxed">
+                Calculated as time elapsed from <strong>Complaint Creation</strong> to the <strong>First transition to "Resolved"</strong>.
+              </p>
+              <div className="p-2 rounded-lg bg-slate-800 text-[10px] text-slate-400 font-mono">
+                Complaint Created &rarr; First Resolved &rarr; Resolution Time
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* KPI 4: SLA Compliance % & SLA Breaches */}
+        <div className="p-5 rounded-2xl bg-white/80 border border-emerald-200/80 shadow-sm dark:bg-slate-900/60 dark:backdrop-blur-xl dark:border dark:border-emerald-500/30 dark:shadow-[0_8px_32px_0_rgba(0,0,0,0.37)] hover:dark:border-emerald-500/60 hover:dark:shadow-[0_0_20px_rgba(16,185,129,0.15)] transition-all duration-300 space-y-2 relative">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-1.5">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-400">SLA Compliance %</span>
+              <button
+                type="button"
+                onClick={() => setActiveInfoModal(activeInfoModal === 'sla' ? null : 'sla')}
+                className="text-emerald-500 hover:text-emerald-700 dark:hover:text-emerald-300 cursor-pointer p-0.5"
+                title="View SLA Compliance Definition"
+              >
+                <HelpCircle className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <div className="w-9 h-9 rounded-xl bg-emerald-100 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center border border-emerald-200 dark:border-emerald-500/30">
+              <CheckCircle2 className="w-4 h-4" />
+            </div>
+          </div>
+          <div className="text-3xl font-bold text-emerald-600 dark:text-emerald-400">
+            {loading ? '...' : filteredAnalytics.slaComplianceFormatted}
+          </div>
+          <p className="text-[11px] text-emerald-700/90 dark:text-emerald-300 flex items-center justify-between">
+            <span>Met within threshold</span>
+            <span className="font-bold text-rose-600 dark:text-rose-400">
+              {filteredAnalytics.slaBreachesCount} Breached
+            </span>
+          </p>
+
+          {/* SLA Compliance Tooltip Modal */}
+          {activeInfoModal === 'sla' && (
+            <div className="absolute right-2 top-14 z-50 w-72 p-3 rounded-2xl bg-slate-900 text-white shadow-xl border border-slate-700 text-xs space-y-2 animate-in fade-in zoom-in-95">
+              <div className="flex items-center justify-between border-b border-slate-800 pb-1.5 font-bold">
+                <span className="text-emerald-400 flex items-center gap-1">
+                  <ShieldAlert className="w-3.5 h-3.5" /> SLA Compliance Metric
+                </span>
+                <button
+                  onClick={() => setActiveInfoModal(null)}
+                  className="text-slate-400 hover:text-white"
+                >
+                  &times;
+                </button>
+              </div>
+              <p className="text-[11px] text-slate-300 leading-relaxed">
+                Percentage of tickets resolved or active within their priority SLA threshold:
+              </p>
+              <div className="p-2 rounded-lg bg-slate-800 text-[10px] text-slate-300 space-y-0.5 font-mono">
+                <div>Critical &rarr; 4h limit</div>
+                <div>High &rarr; 12h limit</div>
+                <div>Medium &rarr; 24h limit</div>
+                <div>Low &rarr; 48h limit</div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Smart Municipal Department Workload Summary */}
-      <div className="p-4 rounded-2xl bg-white/80 border border-slate-200/80 shadow-sm dark:bg-slate-900/60 dark:backdrop-blur-xl dark:border dark:border-slate-800/80 space-y-3 transition-all">
-        <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800/80 pb-2">
+      {/* DEPARTMENT PERFORMANCE METRICS GRID */}
+      <div className="p-5 rounded-2xl bg-white/80 border border-slate-200/80 shadow-sm dark:bg-slate-900/60 dark:backdrop-blur-xl dark:border dark:border-slate-800/80 space-y-4 transition-all">
+        <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800/80 pb-3">
           <div className="flex items-center gap-2">
-            <Building2 className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+            <Building2 className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
             <h3 className="text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider">
-              Automated Department Routing Workload (Active Issues)
+              Department Performance Analytics & Workload
             </h3>
           </div>
-          <span className="text-[10px] font-mono text-slate-400">Live Auto-Assigned Data</span>
+          <span className="text-[10px] font-mono text-slate-400">Database Calculated Metrics</span>
         </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-          {MUNICIPAL_DEPARTMENTS.map((dept) => {
-            const count = departmentWorkload[dept] || 0;
-            const isReview = dept === 'Review Required';
-            const isSelected = departmentFilter === dept;
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+          {departmentPerformance.map((dept) => {
+            const isSelected = departmentFilter.toLowerCase() === dept.department.toLowerCase();
+            const isReview = dept.department === 'Review Required';
+
             return (
               <div
-                key={dept}
-                onClick={() => setDepartmentFilter(isSelected ? 'all' : dept)}
-                className={`p-3 rounded-xl border transition-all cursor-pointer ${
+                key={dept.department}
+                onClick={() =>
+                  setDepartmentFilter(isSelected ? 'all' : dept.department)
+                }
+                className={`p-3.5 rounded-xl border transition-all cursor-pointer space-y-2 ${
                   isSelected
-                    ? 'bg-blue-50 dark:bg-blue-950/60 border-blue-400 dark:border-blue-500 shadow-xs'
+                    ? 'bg-blue-50 dark:bg-blue-950/60 border-blue-400 dark:border-blue-500 shadow-xs ring-1 ring-blue-400'
                     : isReview
                     ? 'bg-amber-50/50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-900/40 hover:border-amber-400'
                     : 'bg-slate-50/70 dark:bg-slate-800/40 border-slate-200 dark:border-slate-700/80 hover:border-slate-300 dark:hover:border-slate-600'
                 }`}
               >
-                <div className="text-[10px] font-bold text-slate-500 dark:text-slate-400 truncate">
-                  {dept}
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-bold text-slate-500 dark:text-slate-400 truncate max-w-[130px]" title={dept.department}>
+                    {dept.department}
+                  </span>
+                  <span className="px-1.5 py-0.5 rounded text-[9px] font-black bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-slate-200">
+                    {dept.totalComplaints} total
+                  </span>
                 </div>
-                <div className="text-sm font-black text-slate-900 dark:text-white mt-1">
-                  {count > 0 ? `${count} active` : 'No active issues'}
+
+                <div className="text-sm font-black text-slate-900 dark:text-white">
+                  {dept.activeCount > 0 ? `${dept.activeCount} Active Issues` : '0 Active Issues'}
+                </div>
+
+                <div className="pt-2 border-t border-slate-200/60 dark:border-slate-700/60 grid grid-cols-2 gap-1 text-[10px] font-mono">
+                  <div>
+                    <span className="text-slate-400 block text-[9px]">Avg Response</span>
+                    <span className="font-bold text-amber-600 dark:text-amber-400">{dept.avgResponseTimeFormatted}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-400 block text-[9px]">Avg Resolution</span>
+                    <span className="font-bold text-indigo-600 dark:text-indigo-400">{dept.avgResolutionTimeFormatted}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-400 block text-[9px]">SLA Compliance</span>
+                    <span className="font-bold text-emerald-600 dark:text-emerald-400">{dept.slaComplianceFormatted}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-400 block text-[9px]">SLA Breaches</span>
+                    <span className={`font-bold ${dept.slaBreachesCount > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-400'}`}>
+                      {dept.slaBreachesCount}
+                    </span>
+                  </div>
                 </div>
               </div>
             );
@@ -535,7 +707,7 @@ export function AdminPage() {
         </div>
       </div>
 
-      {/* Dynamic Heatmap Container & Analytics Charts */}
+      {/* Live GIS Map Container & Analytics Charts */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Live GIS Map Container */}
         <div className="lg:col-span-2 rounded-2xl bg-white/80 border border-slate-200/80 shadow-sm dark:bg-slate-900/60 dark:backdrop-blur-xl dark:border dark:border-slate-800/80 dark:shadow-[0_8px_32px_0_rgba(0,0,0,0.37)] p-5 space-y-4 transition-all duration-300">
@@ -753,22 +925,74 @@ export function AdminPage() {
           </div>
         </div>
 
-        {/* Analytics & Department Breakdown Chart */}
+        {/* Analytics & Department Breakdown / Time Trend Chart */}
         <div className="rounded-2xl bg-white/80 border border-slate-200/80 shadow-sm dark:bg-slate-900/60 dark:backdrop-blur-xl dark:border dark:border-slate-800/80 dark:shadow-[0_8px_32px_0_rgba(0,0,0,0.37)] p-5 space-y-4 flex flex-col justify-between transition-all duration-300">
           <div className="border-b border-slate-100 dark:border-slate-800/80 pb-3 flex items-center justify-between">
-            <h3 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider flex items-center gap-2">
+            <div className="flex items-center gap-2">
               <Sparkles className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-              Category Breakdown
-            </h3>
-            <span className="text-xs text-slate-400 font-mono">Live Sync</span>
+              <h3 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider">
+                {chartView === 'category' ? 'Category Breakdown' : 'Historical Time Trend'}
+              </h3>
+            </div>
+
+            {/* Chart Switcher Buttons */}
+            <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl border border-slate-200 dark:border-slate-700">
+              <button
+                type="button"
+                onClick={() => setChartView('category')}
+                className={`px-2 py-0.5 text-[10px] font-bold rounded-lg transition-all flex items-center gap-1 cursor-pointer ${
+                  chartView === 'category'
+                    ? 'bg-blue-600 text-white shadow-sm'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                <BarChart3 className="w-3 h-3" /> Category
+              </button>
+              <button
+                type="button"
+                onClick={() => setChartView('trend')}
+                className={`px-2 py-0.5 text-[10px] font-bold rounded-lg transition-all flex items-center gap-1 cursor-pointer ${
+                  chartView === 'trend'
+                    ? 'bg-indigo-600 text-white shadow-sm'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                <TrendingUp className="w-3 h-3" /> Trend
+              </button>
+            </div>
           </div>
 
           <div className="h-[280px] w-full flex items-center justify-center">
-            {categoryChartData.length > 0 ? (
+            {chartView === 'category' ? (
+              categoryChartData.length > 0 ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={categoryChartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={theme === 'dark' ? '#1e293b' : '#e2e8f0'} />
+                    <XAxis dataKey="name" stroke={theme === 'dark' ? '#94a3b8' : '#64748b'} tick={{ fontSize: 10 }} />
+                    <YAxis stroke={theme === 'dark' ? '#94a3b8' : '#64748b'} tick={{ fontSize: 10 }} />
+                    <Tooltip
+                      contentStyle={{
+                        backgroundColor: theme === 'dark' ? '#0f172a' : '#ffffff',
+                        borderColor: theme === 'dark' ? '#334155' : '#cbd5e1',
+                        borderRadius: '12px',
+                        color: theme === 'dark' ? '#ffffff' : '#0f172a',
+                      }}
+                    />
+                    <Bar dataKey="value" name="Complaints" fill="#3b82f6" radius={[6, 6, 0, 0]}>
+                      {categoryChartData.map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              ) : (
+                <p className="text-xs text-slate-400">No response data available</p>
+              )
+            ) : timeTrendData.length > 0 ? (
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={categoryChartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                <BarChart data={timeTrendData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke={theme === 'dark' ? '#1e293b' : '#e2e8f0'} />
-                  <XAxis dataKey="name" stroke={theme === 'dark' ? '#94a3b8' : '#64748b'} tick={{ fontSize: 10 }} />
+                  <XAxis dataKey="date" stroke={theme === 'dark' ? '#94a3b8' : '#64748b'} tick={{ fontSize: 10 }} />
                   <YAxis stroke={theme === 'dark' ? '#94a3b8' : '#64748b'} tick={{ fontSize: 10 }} />
                   <Tooltip
                     contentStyle={{
@@ -778,22 +1002,60 @@ export function AdminPage() {
                       color: theme === 'dark' ? '#ffffff' : '#0f172a',
                     }}
                   />
-                  <Bar dataKey="value" fill="#3b82f6" radius={[6, 6, 0, 0]}>
-                    {categoryChartData.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
-                    ))}
-                  </Bar>
+                  <Legend wrapperStyle={{ fontSize: 10 }} />
+                  <Bar dataKey="Complaints" name="Complaints" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="Resolved" name="Resolved" fill="#10b981" radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             ) : (
-              <p className="text-xs text-slate-400">No chart data available</p>
+              <p className="text-xs text-slate-400">No trend data available</p>
             )}
           </div>
 
           <div className="pt-2 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between text-xs text-slate-600 dark:text-slate-400 font-medium">
-            <span>Pending Tickets: <strong className="text-amber-600 dark:text-amber-400">{pendingCount}</strong></span>
-            <span>Resolved Tickets: <strong className="text-emerald-600 dark:text-emerald-400">{resolvedCount}</strong></span>
+            <span>Pending Tickets: <strong className="text-amber-600 dark:text-amber-400">{filteredAnalytics.pendingCount}</strong></span>
+            <span>Resolved Tickets: <strong className="text-emerald-600 dark:text-emerald-400">{filteredAnalytics.resolvedCount}</strong></span>
           </div>
+        </div>
+      </div>
+
+      {/* CATEGORY PERFORMANCE ANALYTICS BREAKDOWN TABLE */}
+      <div className="p-5 rounded-2xl bg-white/80 border border-slate-200/80 shadow-sm dark:bg-slate-900/60 dark:backdrop-blur-xl dark:border dark:border-slate-800/80 space-y-3 transition-all">
+        <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800/80 pb-2">
+          <div className="flex items-center gap-2">
+            <Tag className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+            <h3 className="text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider">
+              Category SLA Performance Breakdown
+            </h3>
+          </div>
+          <span className="text-[10px] font-mono text-slate-400">Database Calculated Metrics</span>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+          {categoryPerformance.map((cat) => (
+            <div
+              key={cat.categoryId}
+              onClick={() =>
+                setCategoryFilter(categoryFilter === cat.categoryId ? 'all' : cat.categoryId)
+              }
+              className={`p-3 rounded-xl border transition-all cursor-pointer space-y-1 ${
+                categoryFilter === cat.categoryId
+                  ? 'bg-blue-50 dark:bg-blue-950/60 border-blue-400 dark:border-blue-500 shadow-xs'
+                  : 'bg-slate-50/70 dark:bg-slate-800/40 border-slate-200 dark:border-slate-700/80 hover:border-slate-300 dark:hover:border-slate-600'
+              }`}
+            >
+              <div className="text-[10px] font-bold text-slate-500 dark:text-slate-400 truncate">
+                {cat.label}
+              </div>
+              <div className="text-xs font-black text-slate-900 dark:text-white">
+                {cat.totalCount} reports ({cat.resolvedCount} res)
+              </div>
+              <div className="text-[9px] font-mono text-slate-500 dark:text-slate-400 pt-1 border-t border-slate-200/50 dark:border-slate-700/50 flex flex-col gap-0.5">
+                <span>Avg Res: <strong className="text-indigo-600 dark:text-indigo-400">{cat.avgResolutionTimeFormatted}</strong></span>
+                <span>SLA: <strong className="text-emerald-600 dark:text-emerald-400">{cat.slaComplianceFormatted}</strong></span>
+              </div>
+            </div>
+          ))}
         </div>
       </div>
 
@@ -826,10 +1088,10 @@ export function AdminPage() {
               onChange={(e) => setStatusFilter(e.target.value)}
               className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700/80 rounded-xl text-xs text-slate-900 dark:text-white focus:outline-none focus:dark:border-blue-500 focus:dark:ring-1 focus:dark:ring-blue-500 transition-colors cursor-pointer"
             >
-              <option value="all">All Statuses ({totalReports})</option>
-              <option value="pending">Pending ({pendingCount})</option>
-              <option value="in progress">In Progress ({inProgressCount})</option>
-              <option value="resolved">Resolved ({resolvedCount})</option>
+              <option value="all">All Statuses ({complaints.length})</option>
+              <option value="pending">Pending ({filteredAnalytics.pendingCount})</option>
+              <option value="in progress">In Progress ({filteredAnalytics.inProgressCount})</option>
+              <option value="resolved">Resolved ({filteredAnalytics.resolvedCount})</option>
             </select>
           </div>
 
@@ -842,10 +1104,10 @@ export function AdminPage() {
               className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700/80 rounded-xl text-xs text-slate-900 dark:text-white focus:outline-none focus:dark:border-blue-500 focus:dark:ring-1 focus:dark:ring-blue-500 transition-colors cursor-pointer"
             >
               <option value="all">All Severities</option>
-              <option value="critical">Critical</option>
-              <option value="high">High</option>
-              <option value="medium">Medium</option>
-              <option value="low">Low</option>
+              <option value="critical">Critical (SLA 4h)</option>
+              <option value="high">High (SLA 12h)</option>
+              <option value="medium">Medium (SLA 24h)</option>
+              <option value="low">Low (SLA 48h)</option>
             </select>
           </div>
 
@@ -932,6 +1194,7 @@ export function AdminPage() {
                   <th className="py-3.5 px-4">Urgency & Issue</th>
                   <th className="py-3.5 px-4">Category & Location</th>
                   <th className="py-3.5 px-4">Routed Department</th>
+                  <th className="py-3.5 px-4">SLA Compliance</th>
                   <th className="py-3.5 px-4">Reporter & AI Diagnosis</th>
                   <th className="py-3.5 px-4">Upvotes</th>
                   <th className="py-3.5 px-4">Status</th>
@@ -944,10 +1207,11 @@ export function AdminPage() {
                   const isUpdatingThis = updatingId === item.id;
                   const itemSeverity = item.severity || item.severity_score || 'Medium';
                   const impactInfo = calculateUrbanImpactScore(item, complaints);
+                  const slaMetrics = slaService.getComplaintMetrics(item);
 
                   return (
                     <tr key={item.id} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40 transition-colors">
-                      {/* Urban Impact Score Column with Tooltip Explanation */}
+                      {/* Urban Impact Score Column */}
                       <td className="py-4 px-4 relative">
                         <div className="flex flex-col items-start space-y-1">
                           <div className="flex items-center gap-1.5">
@@ -1001,6 +1265,7 @@ export function AdminPage() {
                           )}
                         </div>
                       </td>
+
                       {/* Urgency & Issue Summary */}
                       <td className="py-4 px-4">
                         <div className="flex items-start gap-3">
@@ -1055,6 +1320,21 @@ export function AdminPage() {
                               </option>
                             ))}
                           </select>
+                        </div>
+                      </td>
+
+                      {/* SLA Compliance Status */}
+                      <td className="py-4 px-4 space-y-1">
+                        <span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase inline-flex items-center gap-1 ${
+                          slaMetrics.isSlaBreached
+                            ? 'bg-rose-100 dark:bg-rose-500/10 text-rose-800 dark:text-rose-400 border border-rose-200 dark:border-rose-500/30'
+                            : 'bg-emerald-100 dark:bg-emerald-500/10 text-emerald-800 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/30'
+                        }`}>
+                          {slaMetrics.isSlaBreached ? <AlertTriangle className="w-3 h-3 text-rose-500 animate-pulse" /> : <CheckCircle2 className="w-3 h-3 text-emerald-500" />}
+                          {slaMetrics.slaStatusLabel}
+                        </span>
+                        <div className="text-[10px] text-slate-500 dark:text-slate-400 font-mono">
+                          Threshold: {slaMetrics.thresholdHours}h Limit
                         </div>
                       </td>
 
@@ -1132,3 +1412,4 @@ export function AdminPage() {
     </div>
   );
 }
+

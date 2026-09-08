@@ -1,6 +1,6 @@
 // Utility helper functions
 
-import { ISSUE_STATUSES } from './constants';
+import { ISSUE_STATUSES } from './constants.js';
 
 export function formatDate(dateString) {
   if (!dateString) return '';
