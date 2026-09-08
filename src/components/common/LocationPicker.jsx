@@ -366,6 +366,7 @@ export function LocationPicker({
       setActiveTab('map');
       setLocationAccuracy(null);
 
+      console.log('[Location] marker is manually moved to:', { latitude: lat, longitude: lng });
       await handleUpdateCoordinates(lat, lng, 'manual', null, newRequestId);
       toast.info('Location pin updated via marker drag.');
     }
@@ -381,6 +382,7 @@ export function LocationPicker({
     setActiveTab('map');
     setLocationAccuracy(null);
 
+    console.log('[Location] map clicked at:', { latitude: lat, longitude: lng });
     await handleUpdateCoordinates(lat, lng, 'manual', null, newRequestId);
     toast.info('Location pin set on map.');
   };
@@ -388,6 +390,27 @@ export function LocationPicker({
   return (
     <div className="space-y-4 text-slate-900 dark:text-white transition-colors duration-300">
       
+      {/* Temporary Location Pipeline Diagnostic Section */}
+      <div className="p-3.5 bg-slate-950 text-slate-100 rounded-xl border border-blue-500/50 shadow-md text-xs font-mono space-y-1.5">
+        <div className="flex items-center justify-between border-b border-slate-800 pb-1.5 font-bold">
+          <span className="text-blue-400 flex items-center gap-1.5">
+            <Compass className="w-4 h-4 text-blue-400" /> [Location] Pipeline Diagnostics
+          </span>
+          <span className="uppercase text-[10px] px-2 py-0.5 rounded bg-blue-600/30 text-blue-300 border border-blue-400/40">
+            Source: {locationSource || 'Waiting'}
+          </span>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
+          <div>Status: <strong className={isLocating ? 'text-amber-400 animate-pulse' : 'text-emerald-400'}>{isLocating ? 'Acquiring GPS...' : isConfirmed ? 'Location Tagged' : 'Unconfirmed'}</strong></div>
+          <div>Accuracy: <strong className="text-amber-400">{locationAccuracy ? `±${locationAccuracy} meters` : 'N/A'}</strong></div>
+          <div>Latitude: <strong className="text-emerald-400 font-mono">{hasCoordinates ? String(latitude) : 'Not Set'}</strong></div>
+          <div>Longitude: <strong className="text-emerald-400 font-mono">{hasCoordinates ? String(longitude) : 'Not Set'}</strong></div>
+        </div>
+        <div className="text-[11px] truncate text-slate-300 pt-0.5 border-t border-slate-900">
+          Address: <span className="italic text-slate-200">{displayAddress || 'No address geocoded yet'}</span>
+        </div>
+      </div>
+
       {/* Option Selection Bar */}
       <div className="flex flex-col sm:flex-row items-center justify-between gap-3 p-3 bg-slate-100 dark:bg-slate-800/60 rounded-xl border border-slate-200 dark:border-slate-700/70 transition-colors">
         <div className="flex items-center gap-2 w-full sm:w-auto">
@@ -554,15 +577,15 @@ export function LocationPicker({
         <div className="flex flex-wrap items-center gap-3">
           {hasCoordinates ? (
             <>
-              <span><strong className="text-blue-400">LAT:</strong> {Number(latitude).toFixed(6)}</span>
-              <span><strong className="text-blue-400">LNG:</strong> {Number(longitude).toFixed(6)}</span>
+              <span><strong className="text-blue-400">LAT:</strong> {String(latitude)}</span>
+              <span><strong className="text-blue-400">LNG:</strong> {String(longitude)}</span>
             </>
           ) : (
             <span className="text-slate-400">Coordinates unconfirmed (Click map or search place)</span>
           )}
           {locationAccuracy !== null && locationAccuracy !== undefined && (
             <span className="text-slate-300">
-              <strong className="text-amber-400">ACCURACY:</strong> ±{Math.round(locationAccuracy).toLocaleString()} m
+              <strong className="text-amber-400">ACCURACY:</strong> ±{locationAccuracy} m
             </span>
           )}
         </div>
