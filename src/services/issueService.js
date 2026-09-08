@@ -290,6 +290,12 @@ export const issueService = {
         priority,
       };
 
+      console.log('[Location] coordinates sent to Supabase DB:', {
+        latitude,
+        longitude,
+        address,
+      });
+
       // Try full payload with extended columns first (urban_impact_score, recommended_department)
       let { data: complaintData, error: complaintError } = await supabase
         .from('complaints')

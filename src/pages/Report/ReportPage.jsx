@@ -182,10 +182,13 @@ export function ReportPage() {
       }
 
       // 2. Create Issue Record via issueService (verifies active session)
-      console.log("REPORT LOCATION:", {
+      console.log('[Location] complaint submission starts...');
+      console.log('[Location] final selected location:', {
         latitude: locationData.latitude,
         longitude: locationData.longitude,
         address: locationData.address,
+        source: locationData.source,
+        accuracy: locationData.accuracy,
       });
 
       const res = await issueService.createIssue({

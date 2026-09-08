@@ -89,6 +89,23 @@ export function LocationPicker({
 
   const markerRef = useRef(null);
 
+  // Auto-detect GPS on mount if permission is already granted
+  useEffect(() => {
+    if (!hasCoordinates && navigator && navigator.permissions && navigator.permissions.query) {
+      navigator.permissions.query({ name: 'geolocation' }).then((status) => {
+        if (status.state === 'granted') {
+          console.log('[Location] Geolocation permission granted on mount. Auto-detecting position...');
+          handleUseCurrentLocation();
+        } else if (status.state === 'denied') {
+          console.log('[Location] Geolocation permission denied on mount.');
+          setPermissionBlockedAlert(true);
+        }
+      }).catch((err) => {
+        console.warn('[Location] Permissions query check notice:', err);
+      });
+    }
+  }, [hasCoordinates, handleUseCurrentLocation]);
+
   /**
    * Reverse geocode helper to update address and notify parent safely without mutating coordinates
    */
@@ -100,35 +117,46 @@ export function LocationPicker({
 
       // Guard check: ignore stale async calls if newer request occurred
       if (reqId !== null && reqId !== activeRequestIdRef.current) {
-        console.warn('Ignoring stale coordinate update for old request ID:', reqId);
+        console.warn('[Location] Ignoring stale coordinate update for old request ID:', reqId);
         return;
       }
 
       currentSourceRef.current = source;
       setLocationSource(source);
 
-      // 1. Immediately update parent coordinates as confirmed
+      console.log('[Location] Coordinates updated:', {
+        latitude: numLat,
+        longitude: numLng,
+        source,
+        accuracy: acc,
+        requestId: reqId,
+      });
+
+      // 1. Immediately update parent coordinates with current temp address
       notifyParentLocationChange({
         latitude: numLat,
         longitude: numLng,
-        address: displayAddress || tempAddress,
+        address: tempAddress,
         locationSelected: true,
         accuracy: acc,
         source: source,
+        timestamp: Date.now(),
       });
 
       // 2. Perform reverse geocoding asynchronously (maps lat/lng -> address ONLY, never mutates lat/lng)
       setIsGeocoding(true);
+      console.log('[Location] Reverse geocoding started for:', numLat, numLng);
       try {
         const res = await issueService.reverseGeocode(numLat, numLng);
         
         // Guard check again after async fetch
         if (reqId !== null && reqId !== activeRequestIdRef.current) {
-          console.warn('Ignoring stale reverse-geocode result for old request ID:', reqId);
+          console.warn('[Location] Ignoring stale reverse-geocode result for old request ID:', reqId);
           return;
         }
 
         const newAddress = res?.address || tempAddress;
+        console.log('[Location] Reverse geocoding complete:', newAddress);
 
         notifyParentLocationChange({
           latitude: numLat,
@@ -137,16 +165,17 @@ export function LocationPicker({
           locationSelected: true,
           accuracy: acc,
           source: source,
+          timestamp: Date.now(),
         });
       } catch (err) {
-        console.warn('Reverse geocoding error:', err);
+        console.warn('[Location] Reverse geocoding error:', err);
       } finally {
         if (reqId === null || reqId === activeRequestIdRef.current) {
           setIsGeocoding(false);
         }
       }
     },
-    [displayAddress, notifyParentLocationChange]
+    [notifyParentLocationChange]
   );
 
   /**
@@ -163,6 +192,8 @@ export function LocationPicker({
     currentSourceRef.current = 'gps';
     setLocationSource('gps');
 
+    console.log('[Location] GPS request started. Request ID:', newRequestId);
+
     const tryIpFallback = async (reqId) => {
       // Do NOT fallback if request is stale or user manually picked a pin in the meantime
       if (reqId !== activeRequestIdRef.current || currentSourceRef.current === 'manual') {
@@ -170,6 +201,7 @@ export function LocationPicker({
         return false;
       }
 
+      console.log('[Location] IP fallback started...');
       try {
         const ipLoc = await issueService.fetchIpLocation();
         if (reqId !== activeRequestIdRef.current || currentSourceRef.current === 'manual') {
@@ -178,6 +210,7 @@ export function LocationPicker({
         }
 
         if (ipLoc && ipLoc.latitude && ipLoc.longitude) {
+          console.log('[Location] IP fallback completed:', ipLoc);
           setLocationAccuracy(null);
           setPermissionBlockedAlert(false);
           setIsLocating(false);
@@ -192,11 +225,12 @@ export function LocationPicker({
             locationSelected: true,
             accuracy: null,
             source: 'ip',
+            timestamp: Date.now(),
           });
           return true;
         }
       } catch (e) {
-        console.warn('IP location fallback error:', e);
+        console.warn('[Location] IP location fallback error:', e);
       }
       setIsLocating(false);
       return false;
@@ -212,7 +246,7 @@ export function LocationPicker({
 
     // High Accuracy GPS Configuration
     const geoOptions = {
-      enableHighAccuracy: true,  // Require exact GPS hardware hardware fix
+      enableHighAccuracy: true,  // Require exact GPS hardware fix
       timeout: 20000,             // Allow 20s for satellite/sensor lock
       maximumAge: 0,              // Request fresh position, do NOT use stale cached locations
     };
@@ -221,7 +255,7 @@ export function LocationPicker({
       async (pos) => {
         // Race condition guard: ignore if user initiated another action
         if (newRequestId !== activeRequestIdRef.current) {
-          console.warn('Ignoring completed GPS reading for stale request ID:', newRequestId);
+          console.warn('[Location] Ignoring completed GPS reading for stale request ID:', newRequestId);
           setIsLocating(false);
           return;
         }
@@ -230,10 +264,11 @@ export function LocationPicker({
         const lng = pos.coords.longitude;
         const accuracy = pos.coords.accuracy;
 
-        console.log('RAW HIGH-ACCURACY GPS:', {
+        console.log('[Location] GPS success:', {
           latitude: lat,
           longitude: lng,
           accuracy: accuracy,
+          source: 'gps',
         });
 
         setIsLocating(false);
@@ -255,7 +290,7 @@ export function LocationPicker({
           return;
         }
 
-        console.warn('Browser GPS geolocation error:', err);
+        console.warn('[Location] Browser GPS geolocation error:', err);
         setIsLocating(false);
 
         if (err.code === err.PERMISSION_DENIED) {
