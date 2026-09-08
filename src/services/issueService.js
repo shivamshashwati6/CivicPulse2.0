@@ -277,54 +277,46 @@ export const issueService = {
       // Step 2: Insert complaint row directly into public.complaints
       const deptRecommendation = getRecommendedDepartment(category);
 
+      const baseInsertPayload = {
+        user_id: activeUserId,
+        title,
+        description,
+        category,
+        severity,
+        latitude,
+        longitude,
+        address,
+        status: 'Pending',
+        priority,
+      };
+
+      // Try full payload with extended columns first (urban_impact_score, recommended_department)
       let { data: complaintData, error: complaintError } = await supabase
         .from('complaints')
         .insert([
           {
-            user_id: activeUserId,
-            title,
-            description,
-            category,
-            severity,
-            latitude,
-            longitude,
-            address,
-            status: 'Pending',
-            priority,
+            ...baseInsertPayload,
             urban_impact_score: initialImpact.score,
             recommended_department: deptRecommendation,
           },
         ])
         .select();
 
-      // Graceful fallback if recommended_department column is missing in DB schema cache
+      // Graceful fallback if any extended column is missing in DB schema cache
       if (
         complaintError &&
         (complaintError.code === 'PGRST204' ||
           complaintError.code === '42703' ||
-          complaintError.message?.includes('recommended_department'))
+          complaintError.message?.includes('schema cache') ||
+          complaintError.message?.includes('column'))
       ) {
         console.warn(
-          'recommended_department column missing in DB schema cache, retrying insert without column:',
+          'Extended column missing in DB schema cache, retrying insert with base core columns:',
           complaintError.message
         );
         const fallbackRes = await supabase
           .from('complaints')
-          .insert([
-            {
-              user_id: activeUserId,
-              title,
-              description,
-              category,
-              severity,
-              latitude,
-              longitude,
-              address,
-              status: 'Pending',
-              priority,
-              urban_impact_score: initialImpact.score,
-            },
-          ])
+          .insert([baseInsertPayload])
           .select();
 
         complaintData = fallbackRes.data;
@@ -340,6 +332,7 @@ export const issueService = {
       const insertedRecord = rawRecord
         ? {
             ...rawRecord,
+            urban_impact_score: rawRecord.urban_impact_score ?? initialImpact.score,
             recommended_department: rawRecord.recommended_department || deptRecommendation,
           }
         : null;
