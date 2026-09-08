@@ -277,7 +277,7 @@ export const issueService = {
       // Step 2: Insert complaint row directly into public.complaints
       const deptRecommendation = getRecommendedDepartment(category);
 
-      const { data: complaintData, error: complaintError } = await supabase
+      let { data: complaintData, error: complaintError } = await supabase
         .from('complaints')
         .insert([
           {
@@ -297,12 +297,52 @@ export const issueService = {
         ])
         .select();
 
+      // Graceful fallback if recommended_department column is missing in DB schema cache
+      if (
+        complaintError &&
+        (complaintError.code === 'PGRST204' ||
+          complaintError.code === '42703' ||
+          complaintError.message?.includes('recommended_department'))
+      ) {
+        console.warn(
+          'recommended_department column missing in DB schema cache, retrying insert without column:',
+          complaintError.message
+        );
+        const fallbackRes = await supabase
+          .from('complaints')
+          .insert([
+            {
+              user_id: activeUserId,
+              title,
+              description,
+              category,
+              severity,
+              latitude,
+              longitude,
+              address,
+              status: 'Pending',
+              priority,
+              urban_impact_score: initialImpact.score,
+            },
+          ])
+          .select();
+
+        complaintData = fallbackRes.data;
+        complaintError = fallbackRes.error;
+      }
+
       if (complaintError) {
         console.error('Supabase DB complaint insert failed:', complaintError);
         return { data: null, error: complaintError };
       }
 
-      const insertedRecord = Array.isArray(complaintData) ? complaintData[0] : complaintData;
+      const rawRecord = Array.isArray(complaintData) ? complaintData[0] : complaintData;
+      const insertedRecord = rawRecord
+        ? {
+            ...rawRecord,
+            recommended_department: rawRecord.recommended_department || deptRecommendation,
+          }
+        : null;
       const finalId = insertedRecord?.id;
 
       // Step 3: Insert image record into public.complaint_images if image provided
