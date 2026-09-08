@@ -131,12 +131,21 @@ export function ReportPage() {
         return;
       }
 
+      const latNum = Number(locationData.latitude);
+      const lngNum = Number(locationData.longitude);
+
       if (
         !locationData.locationSelected ||
         locationData.latitude === null ||
         locationData.latitude === undefined ||
         locationData.longitude === null ||
         locationData.longitude === undefined ||
+        isNaN(latNum) ||
+        isNaN(lngNum) ||
+        latNum < -90 ||
+        latNum > 90 ||
+        lngNum < -180 ||
+        lngNum > 180 ||
         !locationData.address ||
         !locationData.address.trim()
       ) {

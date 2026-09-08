@@ -54,11 +54,15 @@ export function LocationPicker({
   const [activeTab, setActiveTab] = useState('gps');
   const [permissionBlockedAlert, setPermissionBlockedAlert] = useState(false);
   const [locationAccuracy, setLocationAccuracy] = useState(null);
-  const [gpsAccuracyTooLow, setGpsAccuracyTooLow] = useState(false);
+  const [locationSource, setLocationSource] = useState('none'); // 'gps' | 'manual' | 'ip' | 'search' | 'none'
 
   // Address search query state
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchingAddress, setIsSearchingAddress] = useState(false);
+
+  // Request sequence ID ref & active source ref to prevent async race conditions
+  const activeRequestIdRef = useRef(0);
+  const currentSourceRef = useRef('none');
 
   // Unified callback handler for parent component compatibility (onChange or onLocationSelect)
   const notifyParentLocationChange = useCallback(
@@ -86,13 +90,22 @@ export function LocationPicker({
   const markerRef = useRef(null);
 
   /**
-   * Reverse geocode helper to update address and notify parent
+   * Reverse geocode helper to update address and notify parent safely without mutating coordinates
    */
   const handleUpdateCoordinates = useCallback(
-    async (lat, lng, notifySuccess = true, acc = null) => {
+    async (lat, lng, source = 'manual', acc = null, reqId = null) => {
       const numLat = Number(lat);
       const numLng = Number(lng);
-      const tempAddress = `Selected map location (${numLat.toFixed(5)}, ${numLng.toFixed(5)})`;
+      const tempAddress = `Selected location (${numLat.toFixed(6)}, ${numLng.toFixed(6)})`;
+
+      // Guard check: ignore stale async calls if newer request occurred
+      if (reqId !== null && reqId !== activeRequestIdRef.current) {
+        console.warn('Ignoring stale coordinate update for old request ID:', reqId);
+        return;
+      }
+
+      currentSourceRef.current = source;
+      setLocationSource(source);
 
       // 1. Immediately update parent coordinates as confirmed
       notifyParentLocationChange({
@@ -101,12 +114,20 @@ export function LocationPicker({
         address: displayAddress || tempAddress,
         locationSelected: true,
         accuracy: acc,
+        source: source,
       });
 
-      // 2. Perform reverse geocoding asynchronously
+      // 2. Perform reverse geocoding asynchronously (maps lat/lng -> address ONLY, never mutates lat/lng)
       setIsGeocoding(true);
       try {
         const res = await issueService.reverseGeocode(numLat, numLng);
+        
+        // Guard check again after async fetch
+        if (reqId !== null && reqId !== activeRequestIdRef.current) {
+          console.warn('Ignoring stale reverse-geocode result for old request ID:', reqId);
+          return;
+        }
+
         const newAddress = res?.address || tempAddress;
 
         notifyParentLocationChange({
@@ -115,42 +136,62 @@ export function LocationPicker({
           address: newAddress,
           locationSelected: true,
           accuracy: acc,
+          source: source,
         });
-
-        if (notifySuccess) {
-          toast.success('Location address updated');
-        }
       } catch (err) {
         console.warn('Reverse geocoding error:', err);
       } finally {
-        setIsGeocoding(false);
+        if (reqId === null || reqId === activeRequestIdRef.current) {
+          setIsGeocoding(false);
+        }
       }
     },
-    [displayAddress, notifyParentLocationChange, toast]
+    [displayAddress, notifyParentLocationChange]
   );
 
   /**
-   * 📍 Core GPS Detection Handler (Optimized with 5000m threshold, silent IP fallback & smooth map flyTo)
+   * 📍 Core High-Accuracy Browser GPS Detection Handler
+   * Priority 1: High-Accuracy Browser GPS
+   * Priority 2: Manual Map Selection
+   * Priority 3: IP Geolocation Fallback (ONLY if GPS fails & user hasn't manually picked location)
    */
   const handleUseCurrentLocation = useCallback(() => {
     setActiveTab('gps');
     setPermissionBlockedAlert(false);
 
-    const tryIpFallback = async () => {
+    const newRequestId = ++activeRequestIdRef.current;
+    currentSourceRef.current = 'gps';
+    setLocationSource('gps');
+
+    const tryIpFallback = async (reqId) => {
+      // Do NOT fallback if request is stale or user manually picked a pin in the meantime
+      if (reqId !== activeRequestIdRef.current || currentSourceRef.current === 'manual') {
+        setIsLocating(false);
+        return false;
+      }
+
       try {
         const ipLoc = await issueService.fetchIpLocation();
+        if (reqId !== activeRequestIdRef.current || currentSourceRef.current === 'manual') {
+          setIsLocating(false);
+          return false;
+        }
+
         if (ipLoc && ipLoc.latitude && ipLoc.longitude) {
           setLocationAccuracy(null);
-          setGpsAccuracyTooLow(false);
           setPermissionBlockedAlert(false);
           setIsLocating(false);
-          toast.info('Location centered over area network. Click map or drag pin to refine.');
+          currentSourceRef.current = 'ip';
+          setLocationSource('ip');
+
+          toast.info('Approximate location detected via network IP. Drag pin or click map to set exact spot.');
           notifyParentLocationChange({
-            latitude: ipLoc.latitude,
-            longitude: ipLoc.longitude,
+            latitude: Number(ipLoc.latitude),
+            longitude: Number(ipLoc.longitude),
             address: ipLoc.address,
             locationSelected: true,
             accuracy: null,
+            source: 'ip',
           });
           return true;
         }
@@ -162,66 +203,74 @@ export function LocationPicker({
     };
 
     if (!navigator || !navigator.geolocation) {
-      tryIpFallback();
+      toast.info('Browser geolocation is not supported by your browser. Attempting approximate network location...');
+      tryIpFallback(newRequestId);
       return;
     }
 
     setIsLocating(true);
 
+    // High Accuracy GPS Configuration
     const geoOptions = {
-      enableHighAccuracy: false, // Set false to allow fast Wi-Fi/cellular triangulation on laptops
-      timeout: 15000,            // 15 seconds allowance
-      maximumAge: 30000,         // Allow cached location up to 30 seconds
+      enableHighAccuracy: true,  // Require exact GPS hardware hardware fix
+      timeout: 20000,             // Allow 20s for satellite/sensor lock
+      maximumAge: 0,              // Request fresh position, do NOT use stale cached locations
     };
 
     navigator.geolocation.getCurrentPosition(
       async (pos) => {
+        // Race condition guard: ignore if user initiated another action
+        if (newRequestId !== activeRequestIdRef.current) {
+          console.warn('Ignoring completed GPS reading for stale request ID:', newRequestId);
+          setIsLocating(false);
+          return;
+        }
+
         const lat = pos.coords.latitude;
         const lng = pos.coords.longitude;
         const accuracy = pos.coords.accuracy;
 
-        // Log raw browser GPS result
-        console.log("RAW GPS:", {
+        console.log('RAW HIGH-ACCURACY GPS:', {
           latitude: lat,
           longitude: lng,
-          accuracy: accuracy
+          accuracy: accuracy,
         });
 
+        setIsLocating(false);
+        setPermissionBlockedAlert(false);
         setLocationAccuracy(accuracy);
 
-        if (accuracy > 5000) {
-          // Accuracy > 5000m: Silently attempt IP location fallback
-          const fallbackOk = await tryIpFallback();
-          if (!fallbackOk) {
-            setGpsAccuracyTooLow(true);
-            toast.info('Location accuracy is broad. Click map to refine exact point.');
-          }
+        if (accuracy <= 100) {
+          toast.success(`Exact GPS location detected (accuracy: ±${Math.round(accuracy)} m)!`);
+        } else {
+          toast.info(`GPS location detected (accuracy: ±${Math.round(accuracy).toLocaleString()} m). Drag marker to refine if needed.`);
+        }
+
+        await handleUpdateCoordinates(lat, lng, 'gps', accuracy, newRequestId);
+      },
+      async (err) => {
+        // Race condition guard
+        if (newRequestId !== activeRequestIdRef.current) {
+          setIsLocating(false);
           return;
         }
 
-        // Position accuracy <= 5000m accepted smoothly
+        console.warn('Browser GPS geolocation error:', err);
         setIsLocating(false);
-        setGpsAccuracyTooLow(false);
-        setPermissionBlockedAlert(false);
-
-        if (accuracy <= 100) {
-          toast.success(`Location detected (high accuracy: ±${Math.round(accuracy)} m)!`);
-        } else {
-          toast.success(`Location detected (±${Math.round(accuracy).toLocaleString()} m). Click map to refine if needed.`);
-        }
-
-        await handleUpdateCoordinates(lat, lng, false, accuracy);
-      },
-      async (err) => {
-        console.warn('Geolocation access error, attempting IP location fallback:', err);
 
         if (err.code === err.PERMISSION_DENIED) {
           setPermissionBlockedAlert(true);
+          toast.error('Location permission was denied. Please allow location access or select on map.');
+        } else if (err.code === err.TIMEOUT) {
+          toast.warn('GPS location request timed out. Trying fallback network location...');
         }
 
-        const fallbackOk = await tryIpFallback();
-        if (!fallbackOk) {
-          toast.error('Unable to retrieve location. Please select your location manually on the map.');
+        // Only attempt IP fallback if user hasn't manually picked a location
+        if (currentSourceRef.current !== 'manual') {
+          const fallbackOk = await tryIpFallback(newRequestId);
+          if (!fallbackOk && err.code !== err.PERMISSION_DENIED) {
+            toast.error('Unable to detect location. Please click on the map to set your location manually.');
+          }
         }
       },
       geoOptions
@@ -235,19 +284,26 @@ export function LocationPicker({
     if (e) e.preventDefault();
     if (!searchQuery.trim()) return;
 
+    const newRequestId = ++activeRequestIdRef.current;
+    currentSourceRef.current = 'search';
+    setLocationSource('search');
+
     setIsSearchingAddress(true);
     try {
       const geocoded = await issueService.geocodeAddress(searchQuery.trim());
+      if (newRequestId !== activeRequestIdRef.current) return;
+
       if (geocoded && geocoded.latitude !== undefined && geocoded.longitude !== undefined) {
         setActiveTab('map');
         setLocationAccuracy(null);
-        setGpsAccuracyTooLow(false);
+
         notifyParentLocationChange({
-          latitude: geocoded.latitude,
-          longitude: geocoded.longitude,
+          latitude: Number(geocoded.latitude),
+          longitude: Number(geocoded.longitude),
           address: geocoded.address,
           locationSelected: true,
           accuracy: null,
+          source: 'search',
         });
         toast.success(`Found location for "${searchQuery.trim()}"`);
       } else {
@@ -255,33 +311,43 @@ export function LocationPicker({
       }
     } catch (err) {
       console.error('Search place error:', err);
-      toast.error('Location not found. Try a more specific place or landmark.');
+      toast.error('Location search failed. Please select your position on the map.');
     } finally {
-      setIsSearchingAddress(false);
+      if (newRequestId === activeRequestIdRef.current) {
+        setIsSearchingAddress(false);
+      }
     }
   };
 
   /**
-   * Marker drag event handler
+   * Marker drag event handler (Manual Map Pin Priority 2)
    */
   const handleMarkerDragEnd = async () => {
     if (markerRef.current) {
       const { lat, lng } = markerRef.current.getLatLng();
+      const newRequestId = ++activeRequestIdRef.current;
+      currentSourceRef.current = 'manual';
+      setLocationSource('manual');
       setActiveTab('map');
       setLocationAccuracy(null);
-      setGpsAccuracyTooLow(false);
-      await handleUpdateCoordinates(lat, lng, true, null);
+
+      await handleUpdateCoordinates(lat, lng, 'manual', null, newRequestId);
+      toast.info('Location pin updated via marker drag.');
     }
   };
 
   /**
-   * Map click event handler
+   * Map click event handler (Manual Map Pin Priority 2)
    */
   const handleMapClick = async (lat, lng) => {
+    const newRequestId = ++activeRequestIdRef.current;
+    currentSourceRef.current = 'manual';
+    setLocationSource('manual');
     setActiveTab('map');
     setLocationAccuracy(null);
-    setGpsAccuracyTooLow(false);
-    await handleUpdateCoordinates(lat, lng, true, null);
+
+    await handleUpdateCoordinates(lat, lng, 'manual', null, newRequestId);
+    toast.info('Location pin set on map.');
   };
 
   return (
@@ -330,23 +396,36 @@ export function LocationPicker({
           </Button>
         </div>
 
-        {/* Status Tag Badge */}
+        {/* Status & Accuracy Badge */}
         <div className="text-[11px] font-medium flex items-center gap-1.5 self-end sm:self-center">
-          {isGeocoding || isSearchingAddress ? (
-            <span className="flex items-center gap-1 text-blue-600 dark:text-blue-400 font-semibold">
-              <Loader2 className="w-3.5 h-3.5 animate-spin" /> Fetching location...
+          {isLocating ? (
+            <span className="flex items-center gap-1 text-blue-600 dark:text-blue-400 font-semibold px-2.5 py-0.5 rounded-full bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800">
+              <Loader2 className="w-3.5 h-3.5 animate-spin" /> Acquiring High-Accuracy GPS...
             </span>
-          ) : !isConfirmed && gpsAccuracyTooLow ? (
-            <span className="flex items-center gap-1 text-amber-600 dark:text-amber-400 font-semibold px-2 py-0.5 rounded-full bg-amber-50 dark:bg-amber-950/60 border border-amber-200 dark:border-amber-800">
-              <AlertCircle className="w-3.5 h-3.5" /> Location accuracy too low
+          ) : isGeocoding || isSearchingAddress ? (
+            <span className="flex items-center gap-1 text-blue-600 dark:text-blue-400 font-semibold px-2.5 py-0.5 rounded-full bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800">
+              <Loader2 className="w-3.5 h-3.5 animate-spin" /> Reverse Geocoding Address...
             </span>
           ) : !isConfirmed ? (
-            <span className="flex items-center gap-1 text-slate-500 dark:text-slate-400 font-semibold px-2 py-0.5 rounded-full bg-slate-200/80 dark:bg-slate-800 border border-slate-300 dark:border-slate-700">
-              <Compass className="w-3.5 h-3.5" /> Coordinates unconfirmed
+            <span className="flex items-center gap-1 text-slate-500 dark:text-slate-400 font-semibold px-2.5 py-0.5 rounded-full bg-slate-200/80 dark:bg-slate-800 border border-slate-300 dark:border-slate-700">
+              <Compass className="w-3.5 h-3.5" /> Location Unconfirmed (Click Map)
+            </span>
+          ) : locationSource === 'gps' ? (
+            <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-semibold px-2.5 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800">
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
+              {locationAccuracy ? `GPS Detected (±${Math.round(locationAccuracy)} m)` : 'GPS Location Detected'}
+            </span>
+          ) : locationSource === 'manual' ? (
+            <span className="flex items-center gap-1 text-blue-600 dark:text-blue-400 font-semibold px-2.5 py-0.5 rounded-full bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800">
+              <MapPin className="w-3.5 h-3.5" /> Manual Pin Selected
+            </span>
+          ) : locationSource === 'ip' ? (
+            <span className="flex items-center gap-1 text-amber-600 dark:text-amber-400 font-semibold px-2.5 py-0.5 rounded-full bg-amber-50 dark:bg-amber-950/60 border border-amber-200 dark:border-amber-800">
+              <AlertCircle className="w-3.5 h-3.5" /> Approximate Network Location (IP)
             </span>
           ) : (
-            <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-semibold px-2 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800">
-              <CheckCircle2 className="w-3.5 h-3.5" /> Location tagged
+            <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-semibold px-2.5 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800">
+              <CheckCircle2 className="w-3.5 h-3.5" /> Location Tagged
             </span>
           )}
         </div>
@@ -408,7 +487,7 @@ export function LocationPicker({
       <div className="relative w-full rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700 shadow-2xs z-0">
         <MapContainer
           center={position}
-          zoom={hasCoordinates ? 15 : 4}
+          zoom={hasCoordinates ? 16 : 4}
           scrollWheelZoom={false}
           style={{ height: '300px', width: '100%' }}
           className="z-0"
@@ -418,7 +497,7 @@ export function LocationPicker({
             url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
             maxZoom={19}
           />
-          <MapRecenter center={position} zoom={hasCoordinates ? 15 : 4} />
+          <MapRecenter center={position} zoom={hasCoordinates ? 16 : 4} />
           <MapEventsHandler onLocationChange={handleMapClick} />
           {hasCoordinates && (
             <Marker
@@ -452,7 +531,9 @@ export function LocationPicker({
             </span>
           )}
         </div>
-        <span className="text-[10px] text-slate-400 font-sans">OpenStreetMap GIS Metadata</span>
+        <div className="text-[10px] text-slate-400 font-sans flex items-center gap-2">
+          <span>Source: <strong className="text-slate-200 uppercase">{locationSource || 'None'}</strong></span>
+        </div>
       </div>
     </div>
   );
