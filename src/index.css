@@ -1,0 +1,27 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  body {
+    @apply bg-[#f8fafc] text-slate-900 dark:bg-[#080d1a] dark:text-slate-100 antialiased min-h-screen font-sans transition-colors duration-300;
+  }
+}
+
+/* Cyber-Tactical Radial Glow Background Overlay for Dark Mode */
+.dark .cyber-tactical-bg {
+  background-image: 
+    radial-gradient(circle at 20% 20%, rgba(59, 130, 246, 0.07) 0%, transparent 40%),
+    radial-gradient(circle at 80% 80%, rgba(99, 102, 241, 0.06) 0%, transparent 40%),
+    linear-gradient(to right, rgba(255, 255, 255, 0.015) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.015) 1px, transparent 1px);
+  background-size: 100% 100%, 100% 100%, 36px 36px, 36px 36px;
+}
+
+/* Light Mode Clean Canvas Background */
+.light-canvas-bg {
+  background-image: 
+    linear-gradient(to right, rgba(148, 163, 184, 0.04) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(148, 163, 184, 0.04) 1px, transparent 1px);
+  background-size: 36px 36px;
+}
