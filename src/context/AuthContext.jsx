@@ -143,12 +143,7 @@ export const AuthProvider = ({ children }) => {
    */
   const adminLogin = async ({ email, password, passcode }) => {
     // 1. Passcode Authentication (Fast Admin Authorization)
-    const normalizedPasscode = (passcode || '').trim().toUpperCase();
-    if (
-      normalizedPasscode === 'ADMIN123' ||
-      normalizedPasscode === 'CIVIC_ADMIN_2026' ||
-      normalizedPasscode === 'ADMIN'
-    ) {
+    if (passcode && (passcode === 'ADMIN123' || passcode === 'CIVIC_ADMIN_2026')) {
       setAdminFlags();
       return { success: true, error: null };
     }

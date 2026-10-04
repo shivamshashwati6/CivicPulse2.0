@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { Search, MapPin, PlusCircle, Calendar, Tag, FileText, Loader2, ThumbsUp, Flame } from 'lucide-react';
 import { PageHeader } from '../../components/common/PageHeader';
@@ -176,14 +176,54 @@ export function TrackPage() {
   }, [loadComplaints, user?.id]);
 
   // Deduplicate complaints by unique complaint ID
-  const uniqueComplaints = Array.from(
-    (complaints || []).reduce((acc, item) => {
-      if (item && item.id && !acc.has(item.id)) {
-        acc.set(item.id, item);
+  const uniqueComplaints = useMemo(() => {
+    return Array.from(
+      (complaints || []).reduce((acc, item) => {
+        if (item && item.id && !acc.has(item.id)) {
+          acc.set(item.id, item);
+        }
+        return acc;
+      }, new Map()).values()
+    );
+  }, [complaints]);
+
+  // Pre-calculate complaint IDs belonging to high-activity clusters (>=3 reports within 500m)
+  const highActivityIds = useMemo(() => {
+    const ids = new Set();
+    const withCoords = uniqueComplaints.filter(
+      (c) =>
+        c &&
+        c.latitude !== null &&
+        c.latitude !== undefined &&
+        c.longitude !== null &&
+        c.longitude !== undefined &&
+        !isNaN(Number(c.latitude)) &&
+        !isNaN(Number(c.longitude))
+    );
+
+    for (let i = 0; i < withCoords.length; i++) {
+      const c1 = withCoords[i];
+      let nearbyCount = 0;
+      for (let j = 0; j < withCoords.length; j++) {
+        if (i === j) continue;
+        const c2 = withCoords[j];
+        const dist = calculateDistanceMeters(
+          Number(c1.latitude),
+          Number(c1.longitude),
+          Number(c2.latitude),
+          Number(c2.longitude)
+        );
+        if (dist <= 500) {
+          nearbyCount++;
+          if (nearbyCount >= 2) {
+            ids.add(c1.id);
+            break;
+          }
+        }
       }
-      return acc;
-    }, new Map()).values()
-  );
+    }
+    return ids;
+  }, [uniqueComplaints]);
 
   const filteredComplaints = uniqueComplaints.filter((c) => {
     const matchesSearch =
@@ -283,21 +323,7 @@ export function TrackPage() {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {filteredComplaints.map((item) => {
             const firstImage = item.complaint_images?.[0]?.image_url;
-            const hasNearbyClusters = (() => {
-              if (!item.latitude || !item.longitude) return false;
-              let nearbyCount = 0;
-              for (const other of uniqueComplaints) {
-                if (other.id === item.id) continue;
-                if (other.latitude && other.longitude) {
-                  const dist = calculateDistanceMeters(item.latitude, item.longitude, other.latitude, other.longitude);
-                  if (dist <= 500) {
-                    nearbyCount++;
-                    if (nearbyCount >= 2) return true;
-                  }
-                }
-              }
-              return false;
-            })();
+            const hasNearbyClusters = highActivityIds.has(item.id);
 
             return (
               <Card key={item.id} className="overflow-hidden p-0 hover:shadow-lg transition-all border border-slate-200/80 dark:border-slate-800">

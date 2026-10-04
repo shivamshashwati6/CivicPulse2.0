@@ -155,18 +155,22 @@ export const hotspotScoringService = {
       }
     });
 
-    let agePts = 3;
-    if (oldestUnresolvedAgeHours >= 168) {
-      // > 7 days unresolved
-      agePts = 15;
-    } else if (oldestUnresolvedAgeHours >= 72) {
-      // > 3 days
-      agePts = 12;
-    } else if (oldestUnresolvedAgeHours >= 24) {
-      // > 24 hours
-      agePts = 8;
-    } else if (oldestUnresolvedAgeHours >= 6) {
-      agePts = 5;
+    let agePts = 0;
+    if (unresolvedCount > 0) {
+      if (oldestUnresolvedAgeHours >= 168) {
+        // > 7 days unresolved
+        agePts = 15;
+      } else if (oldestUnresolvedAgeHours >= 72) {
+        // > 3 days
+        agePts = 12;
+      } else if (oldestUnresolvedAgeHours >= 24) {
+        // > 24 hours
+        agePts = 8;
+      } else if (oldestUnresolvedAgeHours >= 6) {
+        agePts = 5;
+      } else {
+        agePts = 3;
+      }
     }
 
     const unresolvedRatio = count > 0 ? unresolvedCount / count : 0;
@@ -181,12 +185,20 @@ export const hotspotScoringService = {
     );
 
     // Sum and clamp final score between 0 and 100
-    const rawTotal = densityPts + severityPts + recurrencePts + unresolvedPts + confirmationsPts;
+    let rawTotal = densityPts + severityPts + recurrencePts + unresolvedPts + confirmationsPts;
+
+    // Case G: If all complaints in this hotspot are resolved, de-escalate score and priority
+    if (unresolvedCount === 0) {
+      rawTotal = Math.min(20, Math.round(rawTotal * 0.25));
+    }
+
     const finalScore = Math.max(0, Math.min(100, Math.round(rawTotal)));
 
     // Classify Risk Level
     let riskLevel = RISK_LEVELS.LOW;
-    if (finalScore >= 75) {
+    if (unresolvedCount === 0) {
+      riskLevel = RISK_LEVELS.LOW;
+    } else if (finalScore >= 75) {
       riskLevel = RISK_LEVELS.CRITICAL;
     } else if (finalScore >= 50) {
       riskLevel = RISK_LEVELS.HIGH;
@@ -196,7 +208,9 @@ export const hotspotScoringService = {
 
     // Classify Action Priority
     let priority = ACTION_PRIORITIES.LOW;
-    if (finalScore >= 75 || criticalCount >= 2 || (criticalCount >= 1 && unresolvedCount >= 3)) {
+    if (unresolvedCount === 0) {
+      priority = ACTION_PRIORITIES.LOW;
+    } else if (finalScore >= 75 || criticalCount >= 2 || (criticalCount >= 1 && unresolvedCount >= 3)) {
       priority = ACTION_PRIORITIES.CRITICAL;
     } else if (finalScore >= 50 || criticalCount >= 1 || unresolvedCount >= 4) {
       priority = ACTION_PRIORITIES.HIGH;

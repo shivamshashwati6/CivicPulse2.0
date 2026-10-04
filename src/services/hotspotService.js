@@ -4,9 +4,9 @@
  * and smart municipal department routing.
  */
 
-import { supabase } from './supabaseClient';
-import { departmentRoutingService } from './departmentRouting';
-import { hotspotScoringService, RISK_LEVELS } from './hotspotScoring';
+import { supabase } from './supabaseClient.js';
+import { departmentRoutingService } from './departmentRouting.js';
+import { hotspotScoringService, RISK_LEVELS } from './hotspotScoring.js';
 
 /**
  * Central Configuration for Hotspot Detection
@@ -113,13 +113,29 @@ export const hotspotService = {
     }
 
     // 2. Spatial Clustering using Proximity Grid / Density Seed
-    // Sort complaints by creation date (newest first) or severity to form stable clusters
-    const sorted = [...geoComplaints].sort((a, b) => {
-      const aTime = a.created_at ? new Date(a.created_at).getTime() : 0;
-      const bTime = b.created_at ? new Date(b.created_at).getTime() : 0;
-      return bTime - aTime;
+    // Pre-calculate neighbor density for each complaint so the densest epicenters form clusters first
+    const candidatesWithDensity = geoComplaints.map((candidate) => {
+      const cLat = Number(candidate.latitude);
+      const cLng = Number(candidate.longitude);
+      let count = 0;
+      for (let j = 0; j < geoComplaints.length; j++) {
+        const other = geoComplaints[j];
+        const dist = calculateDistanceMeters(cLat, cLng, Number(other.latitude), Number(other.longitude));
+        if (dist <= radiusMeters) {
+          count++;
+        }
+      }
+      const time = candidate.created_at ? new Date(candidate.created_at).getTime() : 0;
+      return { candidate, density: count, time };
     });
 
+    // Sort by highest density first, then newest creation timestamp for stability
+    candidatesWithDensity.sort((a, b) => {
+      if (b.density !== a.density) return b.density - a.density;
+      return b.time - a.time;
+    });
+
+    const sorted = candidatesWithDensity.map((cd) => cd.candidate);
     const clusters = [];
     const assignedIds = new Set();
 

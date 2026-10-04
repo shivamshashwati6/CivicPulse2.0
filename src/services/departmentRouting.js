@@ -4,7 +4,7 @@
  * dispatch routing for hotspots and complaints.
  */
 
-import { DEPARTMENT_MAPPING, MUNICIPAL_DEPARTMENTS } from '../utils/constants';
+import { DEPARTMENT_MAPPING, MUNICIPAL_DEPARTMENTS } from '../utils/constants.js';
 
 export const DEPARTMENTS = {
   PUBLIC_WORKS: 'Public Works Department',
@@ -51,12 +51,11 @@ const CATEGORY_TO_DEPARTMENT = {
   potholes: DEPARTMENTS.PUBLIC_WORKS,
   damaged_road: DEPARTMENTS.PUBLIC_WORKS,
   'damaged road': DEPARTMENTS.PUBLIC_WORKS,
+  'road damage': DEPARTMENTS.PUBLIC_WORKS,
   road: DEPARTMENTS.PUBLIC_WORKS,
   roads: DEPARTMENTS.PUBLIC_WORKS,
   footpath: DEPARTMENTS.PUBLIC_WORKS,
   sidewalk: DEPARTMENTS.PUBLIC_WORKS,
-  open_drain: DEPARTMENTS.PUBLIC_WORKS,
-  'open drain': DEPARTMENTS.PUBLIC_WORKS,
   bridge: DEPARTMENTS.PUBLIC_WORKS,
 
   // Waste Management
@@ -72,7 +71,9 @@ const CATEGORY_TO_DEPARTMENT = {
 
   // Electrical & Streetlighting
   streetlight: DEPARTMENTS.ELECTRICAL,
+  streetlights: DEPARTMENTS.ELECTRICAL,
   'street light': DEPARTMENTS.ELECTRICAL,
+  'street lights': DEPARTMENTS.ELECTRICAL,
   'broken streetlight': DEPARTMENTS.ELECTRICAL,
   'broken street light': DEPARTMENTS.ELECTRICAL,
   lighting: DEPARTMENTS.ELECTRICAL,
@@ -87,10 +88,16 @@ const CATEGORY_TO_DEPARTMENT = {
   'water leakage': DEPARTMENTS.WATER_SEWERAGE,
   water: DEPARTMENTS.WATER_SEWERAGE,
   pipe: DEPARTMENTS.WATER_SEWERAGE,
+  pipes: DEPARTMENTS.WATER_SEWERAGE,
   leak: DEPARTMENTS.WATER_SEWERAGE,
+  leakage: DEPARTMENTS.WATER_SEWERAGE,
   sewerage: DEPARTMENTS.WATER_SEWERAGE,
   sewage: DEPARTMENTS.WATER_SEWERAGE,
   drainage: DEPARTMENTS.WATER_SEWERAGE,
+  open_drain: DEPARTMENTS.WATER_SEWERAGE,
+  'open drain': DEPARTMENTS.WATER_SEWERAGE,
+  drain: DEPARTMENTS.WATER_SEWERAGE,
+  drains: DEPARTMENTS.WATER_SEWERAGE,
   overflow: DEPARTMENTS.WATER_SEWERAGE,
 };
 
@@ -102,27 +109,27 @@ export const departmentRoutingService = {
    */
   getDepartmentForCategory(category) {
     if (!category) return DEPARTMENTS.REVIEW_REQUIRED;
-    const key = String(category).trim().toLowerCase().replace(/[-_]/g, ' ');
-    const rawKey = String(category).trim().toLowerCase();
+    const cleanStr = String(category).trim().toLowerCase();
+    const key = cleanStr.replace(/[-_]/g, ' ');
 
-    // Check direct mapping
-    if (CATEGORY_TO_DEPARTMENT[rawKey]) {
-      return CATEGORY_TO_DEPARTMENT[rawKey];
+    // 1. Direct key lookups
+    if (CATEGORY_TO_DEPARTMENT[cleanStr]) {
+      return CATEGORY_TO_DEPARTMENT[cleanStr];
     }
     if (CATEGORY_TO_DEPARTMENT[key]) {
       return CATEGORY_TO_DEPARTMENT[key];
     }
 
-    // Check substring matches
+    // 2. Substring matching (requires pattern or key length >= 3 to avoid false positives)
     for (const [pattern, dept] of Object.entries(CATEGORY_TO_DEPARTMENT)) {
-      if (key.includes(pattern) || pattern.includes(key)) {
+      if (pattern.length >= 3 && (key.includes(pattern) || (key.length >= 4 && pattern.includes(key)))) {
         return dept;
       }
     }
 
-    // Fallback to legacy constants mapping
-    if (DEPARTMENT_MAPPING[category]) {
-      return DEPARTMENT_MAPPING[category];
+    // 3. Fallback to existing constants mapping
+    if (DEPARTMENT_MAPPING[category] || DEPARTMENT_MAPPING[cleanStr]) {
+      return DEPARTMENT_MAPPING[category] || DEPARTMENT_MAPPING[cleanStr];
     }
 
     return DEPARTMENTS.REVIEW_REQUIRED;
