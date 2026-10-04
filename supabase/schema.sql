@@ -41,6 +41,16 @@ CREATE TABLE IF NOT EXISTS public.complaints (
   ai_summary TEXT,
   ai_confidence INTEGER,
   ai_processed_at TIMESTAMPTZ,
+  road TEXT,
+  locality TEXT,
+  city TEXT,
+  municipality TEXT,
+  district TEXT,
+  state TEXT,
+  postcode TEXT,
+  country TEXT,
+  location_source TEXT,
+  gps_accuracy INTEGER,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -71,6 +81,36 @@ BEGIN
   END IF;
   IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='complaints' AND column_name='recommended_department') THEN
     ALTER TABLE public.complaints ADD COLUMN recommended_department TEXT DEFAULT 'Review Required';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='complaints' AND column_name='road') THEN
+    ALTER TABLE public.complaints ADD COLUMN road TEXT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='complaints' AND column_name='locality') THEN
+    ALTER TABLE public.complaints ADD COLUMN locality TEXT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='complaints' AND column_name='city') THEN
+    ALTER TABLE public.complaints ADD COLUMN city TEXT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='complaints' AND column_name='municipality') THEN
+    ALTER TABLE public.complaints ADD COLUMN municipality TEXT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='complaints' AND column_name='district') THEN
+    ALTER TABLE public.complaints ADD COLUMN district TEXT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='complaints' AND column_name='state') THEN
+    ALTER TABLE public.complaints ADD COLUMN state TEXT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='complaints' AND column_name='postcode') THEN
+    ALTER TABLE public.complaints ADD COLUMN postcode TEXT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='complaints' AND column_name='country') THEN
+    ALTER TABLE public.complaints ADD COLUMN country TEXT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='complaints' AND column_name='location_source') THEN
+    ALTER TABLE public.complaints ADD COLUMN location_source TEXT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='complaints' AND column_name='gps_accuracy') THEN
+    ALTER TABLE public.complaints ADD COLUMN gps_accuracy INTEGER;
   END IF;
   IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints WHERE constraint_name='fk_complaints_profiles') THEN
     ALTER TABLE public.complaints ADD CONSTRAINT fk_complaints_profiles FOREIGN KEY (user_id) REFERENCES public.profiles(id) ON DELETE SET NULL;

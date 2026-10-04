@@ -52,6 +52,18 @@ export function ReportPage() {
     longitude: null,
     locationSelected: false,
     accuracy: null,
+    road: '',
+    locality: '',
+    city: '',
+    town: '',
+    village: '',
+    municipality: '',
+    district: '',
+    state: '',
+    postcode: '',
+    country: '',
+    source: null,
+    granularity: null,
   });
 
   // Image Upload & AI State
@@ -149,7 +161,7 @@ export function ReportPage() {
         !locationData.address ||
         !locationData.address.trim()
       ) {
-        toast.error('Please select a valid location on the map before submitting.');
+        toast.error('Please select or detect a valid location before submitting.');
         return;
       }
 
@@ -183,13 +195,7 @@ export function ReportPage() {
 
       // 2. Create Issue Record via issueService (verifies active session)
       console.log('[Location] complaint submission starts...');
-      console.log('[Location] final selected location:', {
-        latitude: locationData.latitude,
-        longitude: locationData.longitude,
-        address: locationData.address,
-        source: locationData.source,
-        accuracy: locationData.accuracy,
-      });
+      console.log('[Location] final selected location:', locationData);
 
       const res = await issueService.createIssue({
         userId: activeUser.id,
@@ -202,6 +208,18 @@ export function ReportPage() {
         latitude: locationData.latitude,
         longitude: locationData.longitude,
         address: locationData.address,
+        road: locationData.road || '',
+        locality: locationData.locality || '',
+        city: locationData.city || '',
+        town: locationData.town || '',
+        village: locationData.village || '',
+        municipality: locationData.municipality || '',
+        district: locationData.district || '',
+        state: locationData.state || '',
+        postcode: locationData.postcode || '',
+        country: locationData.country || '',
+        location_source: locationData.source || '',
+        gps_accuracy: locationData.accuracy || null,
         priority: severity === 'Critical' ? 'High' : severity === 'High' ? 'High' : 'Medium',
         imageUrl: uploadedImageUrl,
       });

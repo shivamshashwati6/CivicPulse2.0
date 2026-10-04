@@ -9,58 +9,127 @@ function isValidUuid(idStr) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(idStr);
 }
 
+/**
+ * Nominatim OSM type/class → granularity string
+ * Determines whether a search result is an exact place or a broad area.
+ */
+function computeGranularity(item) {
+  const type = item?.type || '';
+  const cls = item?.class || '';
+  const addr = item?.address || {};
+
+  // Exact/fine-grained types
+  if (['house', 'building', 'amenity', 'shop', 'office', 'tourism', 'historic'].includes(cls)) return 'building';
+  if (type === 'house' || type === 'building') return 'building';
+  if (cls === 'highway' && ['residential', 'secondary', 'tertiary', 'primary', 'service', 'unclassified', 'path', 'footway'].includes(type)) return 'road';
+  if (cls === 'highway') return 'road';
+  if (type === 'postcode' || addr.postcode) return 'postcode';
+  if (['neighbourhood', 'suburb', 'quarter', 'residential'].includes(type)) return 'neighbourhood';
+  if (['village', 'hamlet'].includes(type)) return 'village';
+  if (['town'].includes(type)) return 'town';
+  if (['city', 'municipality'].includes(type)) return 'city';
+  if (['district', 'county', 'state_district'].includes(type)) return 'district';
+  if (['state', 'province'].includes(type)) return 'state';
+  return 'area';
+}
+
+/**
+ * Returns true if a granularity value represents an approximate/broad area
+ * (not a specific building, address, road, or amenity).
+ */
+export function isApproximateGranularity(granularity) {
+  return ['city', 'town', 'village', 'district', 'state', 'area', 'neighbourhood', 'suburb'].includes(granularity);
+}
+
+/**
+ * Normalize raw Nominatim address fields into a structured CivicPulse location object.
+ * IMPORTANT: lat/lng are NEVER touched here. They are passed in from the call site.
+ */
+function normalizeNominatimAddress(addr) {
+  const road = [
+    addr.amenity || addr.building || addr.house_number || '',
+    addr.road || addr.street || addr.pedestrian || addr.highway || '',
+  ].filter(Boolean).join(' ').trim();
+
+  const locality = addr.suburb || addr.neighbourhood || addr.residential || addr.quarter || '';
+  const city = addr.city || '';
+  const town = addr.town || '';
+  const village = addr.village || '';
+  const municipality = addr.municipality || '';
+  const district = addr.state_district || addr.district || addr.county || '';
+  const state = addr.state || '';
+  const postcode = addr.postcode || '';
+  const country = addr.country || 'India';
+
+  // Build display address from most-to-least specific parts
+  const cityTownVillage = city || town || village || municipality || '';
+  const parts = [road, locality, cityTownVillage, district, state ? (postcode ? `${state} - ${postcode}` : state) : postcode, country]
+    .filter(Boolean);
+  const cleanParts = parts.filter((part, idx) => parts.indexOf(part) === idx);
+  const address = cleanParts.join(', ');
+
+  return { address, road, locality, city, town, village, municipality, district, state, postcode, country };
+}
+
 export const issueService = {
   /**
-   * Reverse geocode latitude and longitude using OpenStreetMap Nominatim
+   * Reverse geocode coordinates into a full structured Indian address.
+   * ALWAYS returns the same lat/lng that was passed in — NEVER modifies them.
+   *
+   * Returns:
+   * { address, road, locality, city, town, village, municipality, district, state, postcode, country, error }
    */
   async reverseGeocode(lat, lon) {
     if (lat === null || lat === undefined || lon === null || lon === undefined) {
       return { address: '', error: new Error('Invalid coordinates') };
     }
 
+    // ── Primary: Nominatim ────────────────────────────────────────────────────
     try {
       const response = await fetch(
-        `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json`
+        `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&addressdetails=1`,
+        { headers: { 'User-Agent': 'CivicPulseApp/1.0 (civic.pulse.app)' } }
       );
       if (response.ok) {
         const data = await response.json();
+        if (data && data.address) {
+          const structured = normalizeNominatimAddress(data.address);
+          if (structured.address) {
+            return { ...structured, error: null };
+          }
+        }
         if (data && data.display_name) {
-          return {
-            address: data.display_name,
-            error: null,
-          };
+          return { address: data.display_name, road: '', locality: '', city: '', town: '', village: '', municipality: '', district: '', state: '', postcode: '', country: 'India', error: null };
         }
       }
     } catch (err) {
-      console.warn('Nominatim reverse geocoding error:', err);
+      console.warn('[reverseGeocode] Nominatim error:', err);
     }
 
+    // ── Fallback: BigDataCloud ────────────────────────────────────────────────
     try {
       const response = await fetch(
         `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=en`
       );
       if (response.ok) {
         const data = await response.json();
-        const parts = [
-          data.locality || data.city || data.localityInfo?.administrative?.[2]?.name,
-          data.principalSubdivision || data.region,
-          data.countryName,
-        ].filter(Boolean);
-
+        const city = data.city || '';
+        const locality = data.locality || data.localityInfo?.administrative?.[2]?.name || '';
+        const state = data.principalSubdivision || data.region || '';
+        const country = data.countryName || 'India';
+        const parts = [locality || city, state, country].filter(Boolean);
         if (parts.length > 0) {
-          return {
-            address: parts.join(', '),
-            error: null,
-          };
+          return { address: parts.join(', '), road: '', locality, city, town: '', village: '', municipality: '', district: '', state, postcode: '', country, error: null };
         }
       }
     } catch (err) {
-      console.warn('BigDataCloud reverse geocoding warning:', err);
+      console.warn('[reverseGeocode] BigDataCloud error:', err);
     }
 
-    // Graceful coordinate string fallback if network geocoding fails
+    // ── Final fallback ────────────────────────────────────────────────────────
     return {
-      address: `Selected map location (${Number(lat).toFixed(5)}, ${Number(lon).toFixed(5)})`,
+      address: `Selected map location (${Number(lat).toFixed(6)}, ${Number(lon).toFixed(6)})`,
+      road: '', locality: '', city: '', town: '', village: '', municipality: '', district: '', state: '', postcode: '', country: 'India',
       error: null,
     };
   },
@@ -72,9 +141,8 @@ export const issueService = {
     if (!searchQuery || !searchQuery.trim()) return null;
     try {
       const response = await fetch(
-        `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(
-          searchQuery.trim()
-        )}&format=json&limit=5&addressdetails=1`
+        `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(searchQuery.trim())}&format=json&limit=5&countrycodes=in&addressdetails=1`,
+        { headers: { 'User-Agent': 'CivicPulseApp/1.0 (civic.pulse.app)' } }
       );
       if (response.ok) {
         const data = await response.json();
@@ -88,9 +156,105 @@ export const issueService = {
         }
       }
     } catch (err) {
-      console.warn('Nominatim geocode query error:', err);
+      console.warn('[geocodeAddress] Nominatim error:', err);
     }
     return null;
+  },
+
+  /**
+   * India-wide geocoding search returning up to 6 enriched suggestions.
+   *
+   * Each result includes:
+   *   latitude, longitude, address, name, context,
+   *   road, locality, city, town, village, municipality, district, state, postcode, country,
+   *   granularity, isApproximate
+   *
+   * Returns { notFound: true } when no results are found.
+   */
+  async searchLocationSuggestions(searchQuery) {
+    if (!searchQuery || !searchQuery.trim()) return [];
+    const nominatimHeaders = { headers: { 'User-Agent': 'CivicPulseApp/1.0 (civic.pulse.app)' } };
+    try {
+      // Priority: India-specific search
+      let response = await fetch(
+        `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(searchQuery.trim())}&format=json&limit=6&countrycodes=in&addressdetails=1`,
+        nominatimHeaders
+      );
+
+      let data = [];
+      if (response.ok) data = await response.json();
+
+      // Global fallback if no India results
+      if (!data || data.length === 0) {
+        response = await fetch(
+          `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(searchQuery.trim())}&format=json&limit=6&addressdetails=1`,
+          nominatimHeaders
+        );
+        if (response.ok) data = await response.json();
+      }
+
+      if (Array.isArray(data) && data.length > 0) {
+        return data.map((item) => {
+          const addr = item.address || {};
+
+          const mainName =
+            item.name ||
+            addr.amenity ||
+            addr.building ||
+            addr.road ||
+            addr.suburb ||
+            addr.city ||
+            addr.town ||
+            addr.village ||
+            item.display_name?.split(',')[0] ||
+            searchQuery.trim();
+
+          const structured = normalizeNominatimAddress(addr);
+
+          const contextParts = [
+            structured.locality,
+            structured.city || structured.town || structured.village,
+            structured.district,
+            structured.state,
+            structured.country,
+          ].filter((p) => p && p.toLowerCase() !== mainName.toLowerCase());
+          const cleanContext = contextParts.filter((p, idx) => contextParts.indexOf(p) === idx).join(', ');
+
+          const granularity = computeGranularity(item);
+
+          return {
+            latitude: parseFloat(item.lat),
+            longitude: parseFloat(item.lon),
+            address: item.display_name || searchQuery.trim(),
+            name: mainName,
+            context: cleanContext || item.display_name,
+            granularity,
+            isApproximate: isApproximateGranularity(granularity),
+            // Nominatim metadata for debugging
+            osm_type: item.type,
+            osm_class: item.class,
+            place_id: item.place_id,
+            // Structured administrative fields
+            road: structured.road,
+            locality: structured.locality,
+            city: structured.city,
+            town: structured.town,
+            village: structured.village,
+            municipality: structured.municipality,
+            district: structured.district,
+            state: structured.state,
+            postcode: structured.postcode,
+            country: structured.country,
+          };
+        });
+      }
+
+      // Explicit sentinel so the UI can show a specific "not found" message
+      return { notFound: true, results: [] };
+    } catch (err) {
+      console.warn('[searchLocationSuggestions] Nominatim error:', err);
+    }
+    return [];
   },
 
   /**
@@ -195,6 +359,18 @@ export const issueService = {
     latitude = null,
     longitude = null,
     address = '',
+    road = '',
+    locality = '',
+    city = '',
+    town = '',
+    village = '',
+    municipality = '',
+    district = '',
+    state = '',
+    postcode = '',
+    country = '',
+    location_source = '',
+    gps_accuracy = null,
     priority = 'Medium',
     imageUrl = null,
   }) {
@@ -290,13 +466,9 @@ export const issueService = {
         priority,
       };
 
-      console.log('[Location] coordinates sent to Supabase DB:', {
-        latitude,
-        longitude,
-        address,
-      });
+      console.log('[Location] coordinates sent to Supabase DB:', { latitude, longitude, address, road, locality, city, town, village, municipality, district, state, postcode, location_source, gps_accuracy });
 
-      // Try full payload with extended columns first (urban_impact_score, recommended_department)
+      // Try full payload with all structured location + extended columns
       let { data: complaintData, error: complaintError } = await supabase
         .from('complaints')
         .insert([
@@ -304,6 +476,16 @@ export const issueService = {
             ...baseInsertPayload,
             urban_impact_score: initialImpact.score,
             recommended_department: deptRecommendation,
+            road,
+            locality,
+            city,
+            municipality,
+            district,
+            state,
+            postcode,
+            country,
+            location_source,
+            gps_accuracy,
           },
         ])
         .select();
@@ -425,7 +607,16 @@ export const issueService = {
         .order('created_at', { ascending: false });
 
       if (error) {
-        console.warn('Supabase fetchUserComplaints query error:', error);
+        console.warn('Supabase fetchUserComplaints query error, retrying without relations:', error);
+        const { data: flatData, error: flatError } = await supabase
+          .from('complaints')
+          .select('*')
+          .eq('user_id', userId)
+          .order('created_at', { ascending: false });
+
+        if (!flatError && flatData) {
+          return { data: flatData, error: null };
+        }
         return { data: [], error };
       }
 
@@ -691,7 +882,7 @@ export const issueService = {
   /**
    * Fetch Set of complaint IDs upvoted by a specific user
    */
-  async getUserUpvotedIssueIds(userId) {
+  async fetchUserUpvotedIds(userId) {
     if (!userId || !isValidUuid(userId)) return new Set();
     try {
       const { data, error } = await supabase
@@ -699,10 +890,21 @@ export const issueService = {
         .select('complaint_id')
         .eq('user_id', userId);
 
-      if (error || !data) return new Set();
-      return new Set(data.map((row) => row.complaint_id));
-    } catch {
+      if (error) {
+        console.warn('fetchUserUpvotedIds error:', error);
+        return new Set();
+      }
+      return new Set((data || []).map((r) => r.complaint_id));
+    } catch (err) {
+      console.error('fetchUserUpvotedIds exception:', err);
       return new Set();
     }
+  },
+
+  /**
+   * Fetch Set of complaint IDs upvoted by a specific user (alias for fetchUserUpvotedIds)
+   */
+  async getUserUpvotedIssueIds(userId) {
+    return this.fetchUserUpvotedIds(userId);
   },
 };

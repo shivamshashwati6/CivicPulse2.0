@@ -37,7 +37,10 @@ export function DashboardPage() {
 
       let fetchedComplaints = [];
       if (currentUserId) {
-        const { data } = await issueService.fetchUserComplaints(currentUserId);
+        const { data, error } = await issueService.fetchUserComplaints(currentUserId);
+        if (error) {
+          console.warn('Dashboard fetchUserComplaints query notice:', error);
+        }
         fetchedComplaints = data || [];
       } else {
         // Fallback gracefully if no user session exists
@@ -48,12 +51,17 @@ export function DashboardPage() {
       setComplaints(fetchedComplaints);
 
       if (currentUserId) {
-        const userVotesSet = await issueService.getUserUpvotedIssueIds(currentUserId);
-        setVotedIds(userVotesSet);
+        try {
+          const userVotesSet = await issueService.getUserUpvotedIssueIds(currentUserId);
+          if (userVotesSet instanceof Set) {
+            setVotedIds(userVotesSet);
+          }
+        } catch (voteErr) {
+          console.warn('Dashboard user upvotes fetch notice:', voteErr);
+        }
       }
     } catch (err) {
       console.error('Error fetching citizen dashboard complaints:', err);
-      setComplaints([]);
     } finally {
       // Ensure skeleton loaders unmount regardless of fetch success or empty arrays
       setLoading(false);

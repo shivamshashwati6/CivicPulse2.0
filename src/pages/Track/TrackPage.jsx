@@ -29,14 +29,25 @@ export function TrackPage() {
       return;
     }
     setLoading(true);
-    const { data } = await issueService.fetchUserComplaints(user.id);
-    setComplaints(data || []);
-    
-    if (user?.id) {
-      const userVotesSet = await issueService.getUserUpvotedIssueIds(user.id);
-      setVotedIds(userVotesSet);
+    try {
+      const { data } = await issueService.fetchUserComplaints(user.id);
+      setComplaints(data || []);
+      
+      if (user?.id) {
+        try {
+          const userVotesSet = await issueService.getUserUpvotedIssueIds(user.id);
+          if (userVotesSet instanceof Set) {
+            setVotedIds(userVotesSet);
+          }
+        } catch (voteErr) {
+          console.warn('TrackPage userVotes error:', voteErr);
+        }
+      }
+    } catch (err) {
+      console.error('Error loading complaints in TrackPage:', err);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }, [user]);
 
   const handleUpvote = async (complaintId) => {
