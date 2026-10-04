@@ -11,8 +11,6 @@ import {
   Tooltip,
   Cell,
   CartesianGrid,
-  LineChart,
-  Line,
   Legend,
 } from 'recharts';
 import {
@@ -33,7 +31,6 @@ import {
   Trash2,
   HelpCircle,
   Zap,
-  Eye,
   Building2,
   AlertTriangle,
   TrendingUp,
@@ -42,19 +39,21 @@ import {
   ShieldAlert,
   Info,
   BarChart3,
-  Calendar,
 } from 'lucide-react';
 import { PageHeader } from '../../components/common/PageHeader';
 import { Button } from '../../components/ui/Button';
 import { Badge } from '../../components/ui/Badge';
 import { Input } from '../../components/ui/Input';
 import { ISSUE_CATEGORIES, MUNICIPAL_DEPARTMENTS } from '../../utils/constants';
-import { calculateUrbanImpactScore, detectUrbanHotspots, getRecommendedDepartment } from '../../utils/helpers';
+import { calculateUrbanImpactScore, getRecommendedDepartment } from '../../utils/helpers';
 import { supabase } from '../../services/supabaseClient';
 import { issueService } from '../../services/issueService';
-import { slaService, formatDurationHours } from '../../services/slaService';
+import { slaService } from '../../services/slaService';
 import { useToast } from '../../hooks/useToast';
 import { useTheme } from '../../hooks/useTheme';
+import { useHotspots } from '../../hooks/useHotspots';
+import { HotspotDetailsModal } from '../../components/hotspots/HotspotDetailsModal';
+import { HotspotPriorityQueue } from '../../components/hotspots/HotspotPriorityQueue';
 
 // Helper to create glowing tactical map marker icons based on severity/status
 const createMarkerIcon = (severity, status) => {
@@ -341,16 +340,28 @@ export function AdminPage() {
     return slaService.calculateTimeTrendData(filteredComplaints);
   }, [filteredComplaints]);
 
-  // Detect Urban Hotspots dynamically from active complaints dataset
-  const hotspots = useMemo(() => {
-    return detectUrbanHotspots(filteredComplaints, 400, categoryFilter);
-  }, [filteredComplaints, categoryFilter]);
-
-  // Hotspot Summary Metrics
-  const totalHotspots = hotspots.length;
-  const criticalHotspotCount = hotspots.filter((h) => h.intensityLabel === 'Critical').length;
-  const highImpactHotspotCount = hotspots.filter((h) => h.intensityLabel === 'High').length;
-  const emergingZoneCount = hotspots.filter((h) => h.isEmerging).length;
+  // Civic Hotspot Intelligence Hook - Automatic proximity clustering, risk scoring, smart department routing
+  const {
+    allHotspots,
+    filteredHotspots,
+    summaryMetrics: hotspotMetrics,
+    radiusMeters: hotspotRadius,
+    setRadiusMeters: setHotspotRadius,
+    minComplaints: hotspotMinComplaints,
+    setMinComplaints: setHotspotMinComplaints,
+    filterRisk: hotspotRiskFilter,
+    setFilterRisk: setHotspotRiskFilter,
+    filterDepartment: hotspotDeptFilter,
+    setFilterDepartment: setHotspotDeptFilter,
+    filterStatus: hotspotStatusFilter,
+    setFilterStatus: setHotspotStatusFilter,
+    filterSearch: hotspotSearch,
+    setFilterSearch: setHotspotSearch,
+    selectedHotspot,
+    setSelectedHotspot,
+    updateStatus: updateHotspotStatus,
+    updateDepartment: updateHotspotDepartment,
+  } = useHotspots(complaints);
 
   // Category Chart Data for BarChart
   const categoryChartData = useMemo(() => {
@@ -372,12 +383,15 @@ export function AdminPage() {
     });
   }, [filteredComplaints, complaints]);
 
-  // City Map Center
+  // City Map Center (defaults to first hotspot, first complaint, or Delhi fallback)
   const mapCenter = useMemo(() => {
+    if (filteredHotspots.length > 0 && filteredHotspots[0].centerLat && filteredHotspots[0].centerLng) {
+      return [filteredHotspots[0].centerLat, filteredHotspots[0].centerLng];
+    }
     const valid = filteredComplaints.find((c) => c.latitude && c.longitude);
     if (valid) return [valid.latitude, valid.longitude];
     return [28.6139, 77.2090];
-  }, [filteredComplaints]);
+  }, [filteredHotspots, filteredComplaints]);
 
   const mapMarkers = useMemo(() => {
     return filteredComplaints.filter((c) => c.latitude && c.longitude);
@@ -668,42 +682,123 @@ export function AdminPage() {
         </div>
       </div>
 
-      {/* Hotspot Intelligence Summary Analytics Strip */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <div className="p-3.5 rounded-xl bg-slate-900 text-white border border-slate-800 shadow-sm space-y-1">
-          <div className="flex items-center justify-between text-[11px] font-bold uppercase tracking-wider text-slate-400">
-            <span>Urban Hotspots</span>
-            <Flame className="w-3.5 h-3.5 text-amber-400" />
+      {/* ------------------------------------------------------------- */}
+      {/* CIVIC HOTSPOT INTELLIGENCE SECTION                             */}
+      {/* ------------------------------------------------------------- */}
+      <div className="space-y-4 pt-4 border-t border-slate-200 dark:border-slate-800">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-xl bg-rose-600/10 dark:bg-rose-500/20 text-rose-600 dark:text-rose-400 flex items-center justify-center border border-rose-200 dark:border-rose-500/30">
+                <Flame className="w-4 h-4 text-rose-600 dark:text-rose-400" />
+              </div>
+              <h2 className="text-lg font-black text-slate-900 dark:text-white uppercase tracking-tight">
+                Civic Hotspot Intelligence
+              </h2>
+              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-800 dark:bg-rose-950/80 dark:text-rose-300 border border-rose-300 dark:border-rose-800">
+                Geographic Proximity Engine
+              </span>
+            </div>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+              Automated spatial clustering, 5-factor risk scoring (0–100), and smart municipal department routing.
+            </p>
           </div>
-          <div className="text-xl font-black text-amber-400">{totalHotspots} Zones</div>
-          <p className="text-[10px] text-slate-400">Spatial clusters (&lt;400m)</p>
+
+          <div className="flex items-center gap-2 text-xs font-mono">
+            <span className="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+              Radius: <strong className="text-blue-600 dark:text-blue-400">{hotspotRadius}m</strong>
+            </span>
+            <span className="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+              Min Cluster: <strong className="text-indigo-600 dark:text-indigo-400">{hotspotMinComplaints} reports</strong>
+            </span>
+          </div>
         </div>
 
-        <div className="p-3.5 rounded-xl bg-red-950/60 text-white border border-red-800/80 shadow-sm space-y-1">
-          <div className="flex items-center justify-between text-[11px] font-bold uppercase tracking-wider text-red-300">
-            <span>Critical Zones</span>
-            <AlertTriangle className="w-3.5 h-3.5 text-red-400" />
+        {/* 4 Summary Cards as per Requirement 10 */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {/* Card 1: Critical Hotspots */}
+          <div
+            onClick={() => setHotspotRiskFilter(hotspotRiskFilter === 'Critical' ? 'all' : 'Critical')}
+            className={`p-4 rounded-2xl bg-white dark:bg-slate-900 border transition-all cursor-pointer space-y-1.5 shadow-sm hover:scale-[1.01] ${
+              hotspotRiskFilter === 'Critical'
+                ? 'border-rose-500 ring-2 ring-rose-500/20 bg-rose-50/50 dark:bg-rose-950/30'
+                : 'border-slate-200/80 dark:border-slate-800 hover:border-rose-300 dark:hover:border-rose-800'
+            }`}
+          >
+            <div className="flex items-center justify-between text-[11px] font-bold uppercase tracking-wider text-rose-600 dark:text-rose-400">
+              <span>Critical Hotspots</span>
+              <AlertTriangle className="w-4 h-4 text-rose-600 dark:text-rose-400 animate-pulse" />
+            </div>
+            <div className="text-2xl sm:text-3xl font-black text-rose-600 dark:text-rose-400">
+              {hotspotMetrics.critical} Critical
+            </div>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">
+              Risk Score 75–100 &bull; Immediate Action
+            </p>
           </div>
-          <div className="text-xl font-black text-red-400">{criticalHotspotCount} High Risk</div>
-          <p className="text-[10px] text-red-300/80">Intensity &ge; 75 / 100</p>
-        </div>
 
-        <div className="p-3.5 rounded-xl bg-amber-950/50 text-white border border-amber-800/80 shadow-sm space-y-1">
-          <div className="flex items-center justify-between text-[11px] font-bold uppercase tracking-wider text-amber-300">
-            <span>High Impact Zones</span>
-            <Zap className="w-3.5 h-3.5 text-amber-400" />
+          {/* Card 2: High-Risk Hotspots */}
+          <div
+            onClick={() => setHotspotRiskFilter(hotspotRiskFilter === 'High' ? 'all' : 'High')}
+            className={`p-4 rounded-2xl bg-white dark:bg-slate-900 border transition-all cursor-pointer space-y-1.5 shadow-sm hover:scale-[1.01] ${
+              hotspotRiskFilter === 'High'
+                ? 'border-amber-500 ring-2 ring-amber-500/20 bg-amber-50/50 dark:bg-amber-950/30'
+                : 'border-slate-200/80 dark:border-slate-800 hover:border-amber-300 dark:hover:border-amber-800'
+            }`}
+          >
+            <div className="flex items-center justify-between text-[11px] font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400">
+              <span>High-Risk Hotspots</span>
+              <Flame className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+            </div>
+            <div className="text-2xl sm:text-3xl font-black text-amber-600 dark:text-amber-400">
+              {hotspotMetrics.high} High
+            </div>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">
+              Risk Score 50–74 &bull; Priority Routing
+            </p>
           </div>
-          <div className="text-xl font-black text-amber-300">{highImpactHotspotCount} Zones</div>
-          <p className="text-[10px] text-amber-300/80">Intensity 50&ndash;74 / 100</p>
-        </div>
 
-        <div className="p-3.5 rounded-xl bg-purple-950/60 text-white border border-purple-800/80 shadow-sm space-y-1">
-          <div className="flex items-center justify-between text-[11px] font-bold uppercase tracking-wider text-purple-300">
-            <span>Emerging Hotspots</span>
-            <TrendingUp className="w-3.5 h-3.5 text-purple-400" />
+          {/* Card 3: Moderate Hotspots */}
+          <div
+            onClick={() => setHotspotRiskFilter(hotspotRiskFilter === 'Moderate' ? 'all' : 'Moderate')}
+            className={`p-4 rounded-2xl bg-white dark:bg-slate-900 border transition-all cursor-pointer space-y-1.5 shadow-sm hover:scale-[1.01] ${
+              hotspotRiskFilter === 'Moderate'
+                ? 'border-yellow-500 ring-2 ring-yellow-500/20 bg-yellow-50/50 dark:bg-yellow-950/30'
+                : 'border-slate-200/80 dark:border-slate-800 hover:border-yellow-300 dark:hover:border-yellow-800'
+            }`}
+          >
+            <div className="flex items-center justify-between text-[11px] font-bold uppercase tracking-wider text-yellow-600 dark:text-yellow-400">
+              <span>Moderate Hotspots</span>
+              <Zap className="w-4 h-4 text-yellow-600 dark:text-yellow-400" />
+            </div>
+            <div className="text-2xl sm:text-3xl font-black text-yellow-600 dark:text-yellow-400">
+              {hotspotMetrics.moderate} Moderate
+            </div>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">
+              Risk Score 25–49 &bull; Scheduled Review
+            </p>
           </div>
-          <div className="text-xl font-black text-purple-300">{emergingZoneCount} Rapid Growth</div>
-          <p className="text-[10px] text-purple-300/80">&ge;50% recent (&lt;48h)</p>
+
+          {/* Card 4: Total Active Hotspots */}
+          <div
+            onClick={() => setHotspotRiskFilter('all')}
+            className={`p-4 rounded-2xl bg-white dark:bg-slate-900 border transition-all cursor-pointer space-y-1.5 shadow-sm hover:scale-[1.01] ${
+              hotspotRiskFilter === 'all'
+                ? 'border-blue-500 ring-2 ring-blue-500/20 bg-blue-50/50 dark:bg-blue-950/30'
+                : 'border-slate-200/80 dark:border-slate-800 hover:border-blue-300 dark:hover:border-blue-800'
+            }`}
+          >
+            <div className="flex items-center justify-between text-[11px] font-bold uppercase tracking-wider text-blue-600 dark:text-blue-400">
+              <span>Total Active Hotspots</span>
+              <Layers className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+            </div>
+            <div className="text-2xl sm:text-3xl font-black text-blue-600 dark:text-blue-400">
+              {hotspotMetrics.totalActive} Total
+            </div>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">
+              {hotspotMetrics.totalReports} total reports in clusters
+            </p>
+          </div>
         </div>
       </div>
 
@@ -723,14 +818,25 @@ export function AdminPage() {
             <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl border border-slate-200 dark:border-slate-700">
               <button
                 type="button"
-                onClick={() => setMapView('hotspots')}
+                onClick={() => setMapView('issues')}
                 className={`px-2.5 py-1 text-[11px] font-bold rounded-lg transition-all flex items-center gap-1 cursor-pointer ${
-                  mapView === 'hotspots'
+                  mapView === 'issues'
                     ? 'bg-blue-600 text-white shadow-sm'
                     : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
                 }`}
               >
-                <Flame className="w-3 h-3" /> Hotspots
+                <MapPin className="w-3 h-3" /> Issues
+              </button>
+              <button
+                type="button"
+                onClick={() => setMapView('hotspots')}
+                className={`px-2.5 py-1 text-[11px] font-bold rounded-lg transition-all flex items-center gap-1 cursor-pointer ${
+                  mapView === 'hotspots'
+                    ? 'bg-rose-600 text-white shadow-sm'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                <Flame className="w-3 h-3" /> Hotspots ({filteredHotspots.length})
               </button>
               <button
                 type="button"
@@ -743,26 +849,15 @@ export function AdminPage() {
               >
                 <Zap className="w-3 h-3" /> Heatmap
               </button>
-              <button
-                type="button"
-                onClick={() => setMapView('issues')}
-                className={`px-2.5 py-1 text-[11px] font-bold rounded-lg transition-all flex items-center gap-1 cursor-pointer ${
-                  mapView === 'issues'
-                    ? 'bg-blue-600 text-white shadow-sm'
-                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                }`}
-              >
-                <MapPin className="w-3 h-3" /> Issue Pins
-              </button>
             </div>
           </div>
 
           <div className="h-[380px] w-full rounded-2xl overflow-hidden border border-slate-200 dark:border-slate-800 relative bg-slate-100 dark:bg-slate-950 transition-colors">
             {/* Empty Hotspots Banner */}
-            {mapView !== 'issues' && hotspots.length === 0 && (
+            {mapView !== 'issues' && filteredHotspots.length === 0 && (
               <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 px-4 py-2 bg-slate-900/90 text-white text-xs font-semibold rounded-xl border border-slate-700 backdrop-blur-md shadow-lg flex items-center gap-2">
                 <AlertCircle className="w-4 h-4 text-amber-400" />
-                <span>No significant urban hotspots detected in current filter view</span>
+                <span>No active hotspots detected matching parameters (Radius: {hotspotRadius}m, Min: {hotspotMinComplaints} reports)</span>
               </div>
             )}
 
@@ -777,111 +872,147 @@ export function AdminPage() {
                 url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
               />
 
-              {/* View Mode 1: Hotspots (Concentration Circles) */}
+              {/* View Mode 1: Hotspots (Concentration Circles with Risk Level Colors) */}
               {mapView === 'hotspots' &&
-                hotspots.map((h) => (
-                  <CircleMarker
-                    key={h.id}
-                    center={[h.centerLat, h.centerLng]}
-                    radius={Math.max(16, Math.min(38, 14 + h.complaintCount * 4))}
-                    pathOptions={{
-                      color: h.strokeColor,
-                      fillColor: h.fillColor,
-                      fillOpacity: 0.5,
-                      weight: h.isEmerging ? 3 : 2,
-                    }}
-                  >
-                    <Popup className="tactical-popup">
-                      <div className="p-2 space-y-2 max-w-xs text-slate-900">
-                        <div className="flex items-center justify-between gap-2 border-b border-slate-200 pb-1.5">
-                          <span
-                            className="px-2 py-0.5 rounded text-[10px] font-black uppercase text-white shadow-2xs"
-                            style={{ backgroundColor: h.fillColor }}
-                          >
-                            {h.intensityLabel} Zone
-                          </span>
-                          <span className="font-mono text-[11px] font-bold text-slate-700">
-                            Intensity: {h.intensityScore} / 100
-                          </span>
-                        </div>
-
-                        {h.isEmerging && (
-                          <div className="px-2 py-1 bg-purple-100 text-purple-900 rounded-lg text-[10px] font-bold flex items-center gap-1 border border-purple-300">
-                            <TrendingUp className="w-3 h-3 text-purple-600" /> Rapidly Emerging Hotspot (&ge;50% &lt;48h)
-                          </div>
-                        )}
-
-                        <div className="grid grid-cols-2 gap-1.5 text-[11px] bg-slate-50 p-2 rounded-lg border border-slate-200">
-                          <div>
-                            <span className="text-slate-500 block text-[9px] uppercase font-bold">Active Complaints</span>
-                            <span className="font-extrabold text-slate-900 text-sm">{h.complaintCount} Reports</span>
-                          </div>
-                          <div>
-                            <span className="text-slate-500 block text-[9px] uppercase font-bold">Main Category</span>
-                            <span className="font-bold text-blue-700 capitalize">{h.mainCategory}</span>
-                          </div>
-                          <div>
-                            <span className="text-slate-500 block text-[9px] uppercase font-bold">Avg Impact Score</span>
-                            <span className="font-bold text-slate-800">{h.avgImpactScore} / 100</span>
-                          </div>
-                          <div>
-                            <span className="text-slate-500 block text-[9px] uppercase font-bold">Max Severity</span>
-                            <span className="font-bold text-red-600 uppercase">{h.maxSeverity}</span>
-                          </div>
-                        </div>
-
-                        <p className="text-[10px] text-slate-500 italic">
-                          Centered near Lat: {Number(h.centerLat || h.center?.[0] || 0).toFixed(4)}, Lng: {Number(h.centerLng || h.center?.[1] || 0).toFixed(4)}
-                        </p>
-
-                        <button
-                          type="button"
-                          onClick={() => setSearchQuery(h.mainCategory)}
-                          className="w-full py-1.5 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-lg text-xs transition-colors flex items-center justify-center gap-1 cursor-pointer"
-                        >
-                          <Filter className="w-3 h-3" /> View Issues in Queue
-                        </button>
-                      </div>
-                    </Popup>
-                  </CircleMarker>
-                ))}
-
-              {/* View Mode 2: Heatmap (Glowing Gradient Circles) */}
-              {mapView === 'heatmap' &&
-                hotspots.map((h) => (
-                  <React.Fragment key={`heat-group-${h.id}`}>
-                    {/* Outer aura */}
+                filteredHotspots.map((h) => {
+                  const color = h.scoringConfig?.strokeColor || '#ef4444';
+                  const fillColor = h.scoringConfig?.fillColor || '#ef4444';
+                  return (
                     <CircleMarker
+                      key={h.id}
                       center={[h.centerLat, h.centerLng]}
-                      radius={Math.max(28, Math.min(60, 20 + h.complaintCount * 6))}
+                      radius={Math.max(16, Math.min(42, 14 + h.totalComplaints * 3))}
                       pathOptions={{
-                        color: h.strokeColor,
-                        fillColor: h.fillColor,
-                        fillOpacity: 0.25,
-                        weight: 1,
+                        color: color,
+                        fillColor: fillColor,
+                        fillOpacity: 0.55,
+                        weight: h.priority === 'CRITICAL' ? 3 : 2,
                       }}
-                    />
-                    {/* Core intense center */}
-                    <CircleMarker
-                      center={[h.centerLat, h.centerLng]}
-                      radius={Math.max(12, Math.min(24, 8 + h.complaintCount * 2))}
-                      pathOptions={{
-                        color: '#ffffff',
-                        fillColor: h.fillColor,
-                        fillOpacity: 0.8,
-                        weight: 2,
+                      eventHandlers={{
+                        click: () => setSelectedHotspot(h),
                       }}
                     >
                       <Popup className="tactical-popup">
-                        <div className="p-1.5 text-xs text-slate-900 space-y-1">
-                          <h4 className="font-extrabold text-sm">{h.intensityLabel} Heat Zone</h4>
-                          <p className="text-[11px] text-slate-600">{h.complaintCount} Complaints concentrated</p>
-                          <p className="text-[11px] font-bold text-indigo-700 capitalize">Dominant: {h.mainCategory}</p>
+                        <div className="p-2 space-y-2 max-w-xs text-slate-900">
+                          <div className="flex items-center justify-between gap-2 border-b border-slate-200 pb-1.5">
+                            <span
+                              className="px-2 py-0.5 rounded text-[10px] font-black uppercase text-white shadow-xs"
+                              style={{ backgroundColor: color }}
+                            >
+                              {h.riskLevel} &bull; {h.priority}
+                            </span>
+                            <span className="font-mono text-[11px] font-bold text-slate-700">
+                              Risk: {h.riskScore} / 100
+                            </span>
+                          </div>
+
+                          <div className="space-y-0.5">
+                            <div className="font-extrabold text-sm text-slate-900">{h.id}</div>
+                            <div className="text-xs text-slate-600 font-medium">{h.areaName}</div>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-1.5 text-[11px] bg-slate-50 p-2 rounded-lg border border-slate-200">
+                            <div>
+                              <span className="text-slate-500 block text-[9px] uppercase font-bold">Total Reports</span>
+                              <span className="font-extrabold text-slate-900 text-sm">{h.totalComplaints} Reports</span>
+                            </div>
+                            <div>
+                              <span className="text-slate-500 block text-[9px] uppercase font-bold">Dominant Issue</span>
+                              <span className="font-bold text-blue-700 capitalize">{h.dominantCategory}</span>
+                            </div>
+                            <div>
+                              <span className="text-slate-500 block text-[9px] uppercase font-bold">Unresolved</span>
+                              <span className="font-bold text-rose-600">{h.unresolvedCount} Active</span>
+                            </div>
+                            <div>
+                              <span className="text-slate-500 block text-[9px] uppercase font-bold">Assigned Dept</span>
+                              <span className="font-bold text-slate-800 text-[10px] truncate block">{h.assignedDepartment}</span>
+                            </div>
+                          </div>
+
+                          <p className="text-[10px] text-slate-500 italic">
+                            Center: {Number(h.centerLat).toFixed(4)}, {Number(h.centerLng).toFixed(4)} ({h.radiusMeters}m radius)
+                          </p>
+
+                          <button
+                            type="button"
+                            onClick={() => setSelectedHotspot(h)}
+                            className="w-full py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg text-xs transition-colors flex items-center justify-center gap-1 cursor-pointer shadow-xs"
+                          >
+                            <Flame className="w-3.5 h-3.5" /> View Hotspot Details &amp; Issues
+                          </button>
                         </div>
                       </Popup>
                     </CircleMarker>
-                  </React.Fragment>
-                ))}
+                  );
+                })}
+
+              {/* View Mode 2: Heatmap (Glowing Gradient Concentric Circles) */}
+              {mapView === 'heatmap' &&
+                filteredHotspots.map((h) => {
+                  const color = h.scoringConfig?.strokeColor || '#ef4444';
+                  const fillColor = h.scoringConfig?.fillColor || '#ef4444';
+                  return (
+                    <React.Fragment key={`heat-group-${h.id}`}>
+                      {/* Outer aura */}
+                      <CircleMarker
+                        center={[h.centerLat, h.centerLng]}
+                        radius={Math.max(28, Math.min(65, 20 + h.totalComplaints * 4))}
+                        pathOptions={{
+                          color: color,
+                          fillColor: fillColor,
+                          fillOpacity: 0.25,
+                          weight: 1,
+                        }}
+                        eventHandlers={{
+                          click: () => setSelectedHotspot(h),
+                        }}
+                      />
+                      {/* Core intense center */}
+                      <CircleMarker
+                        center={[h.centerLat, h.centerLng]}
+                        radius={Math.max(12, Math.min(26, 8 + h.totalComplaints * 2))}
+                        pathOptions={{
+                          color: '#ffffff',
+                          fillColor: fillColor,
+                          fillOpacity: 0.85,
+                          weight: 2,
+                        }}
+                        eventHandlers={{
+                          click: () => setSelectedHotspot(h),
+                        }}
+                      >
+                        <Popup className="tactical-popup">
+                          <div className="p-2 text-xs text-slate-900 space-y-1.5 max-w-xs">
+                            <div className="flex items-center justify-between gap-2 border-b border-slate-200 pb-1">
+                              <span
+                                className="px-2 py-0.5 rounded text-[10px] font-black uppercase text-white"
+                                style={{ backgroundColor: color }}
+                              >
+                                {h.riskLevel} Heat Zone
+                              </span>
+                              <span className="font-mono text-xs font-bold text-slate-700">
+                                Risk: {h.riskScore} / 100
+                              </span>
+                            </div>
+                            <p className="text-[11px] font-bold text-slate-800">{h.areaName}</p>
+                            <p className="text-[11px] text-slate-600">{h.totalComplaints} reports concentrated</p>
+                            <p className="text-[11px] font-bold text-indigo-700 capitalize">
+                              Dominant: {h.dominantCategory} &bull; {h.assignedDepartment}
+                            </p>
+                            <button
+                              type="button"
+                              onClick={() => setSelectedHotspot(h)}
+                              className="w-full mt-2 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg text-xs transition-colors flex items-center justify-center gap-1 cursor-pointer"
+                            >
+                              <Flame className="w-3.5 h-3.5" /> View Hotspot Details
+                            </button>
+                          </div>
+                        </Popup>
+                      </CircleMarker>
+                    </React.Fragment>
+                  );
+                })}
 
               {/* View Mode 3: Individual Pins */}
               {mapView === 'issues' &&
@@ -1018,6 +1149,25 @@ export function AdminPage() {
           </div>
         </div>
       </div>
+
+      {/* CIVIC HOTSPOT INTELLIGENCE PRIORITY ACTION QUEUE */}
+      <HotspotPriorityQueue
+        hotspots={filteredHotspots}
+        allHotspotsCount={allHotspots.length}
+        filterRisk={hotspotRiskFilter}
+        setFilterRisk={setHotspotRiskFilter}
+        filterDepartment={hotspotDeptFilter}
+        setFilterDepartment={setHotspotDeptFilter}
+        filterStatus={hotspotStatusFilter}
+        setFilterStatus={setHotspotStatusFilter}
+        filterSearch={hotspotSearch}
+        setFilterSearch={setHotspotSearch}
+        radiusMeters={hotspotRadius}
+        setRadiusMeters={setHotspotRadius}
+        minComplaints={hotspotMinComplaints}
+        setMinComplaints={setHotspotMinComplaints}
+        onSelectHotspot={(h) => setSelectedHotspot(h)}
+      />
 
       {/* CATEGORY PERFORMANCE ANALYTICS BREAKDOWN TABLE */}
       <div className="p-5 rounded-2xl bg-white/80 border border-slate-200/80 shadow-sm dark:bg-slate-900/60 dark:backdrop-blur-xl dark:border dark:border-slate-800/80 space-y-3 transition-all">
@@ -1409,6 +1559,22 @@ export function AdminPage() {
           </div>
         )}
       </div>
+
+      {/* Hotspot Full Intelligence Details & Related Issues Modal */}
+      {selectedHotspot && (
+        <HotspotDetailsModal
+          hotspot={selectedHotspot}
+          onClose={() => setSelectedHotspot(null)}
+          onUpdateStatus={updateHotspotStatus}
+          onUpdateDepartment={updateHotspotDepartment}
+          onSelectComplaint={(complaint) => {
+            setSelectedHotspot(null);
+            if (complaint?.title) {
+              setSearchQuery(complaint.title);
+            }
+          }}
+        />
+      )}
     </div>
   );
 }

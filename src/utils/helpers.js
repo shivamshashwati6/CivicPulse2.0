@@ -1,6 +1,7 @@
 // Utility helper functions
 
 import { ISSUE_STATUSES } from './constants.js';
+import { departmentRoutingService } from '../services/departmentRouting';
 
 export function formatDate(dateString) {
   if (!dateString) return '';
@@ -299,31 +300,13 @@ export function detectUrbanHotspots(complaints = [], radiusMeters = 400, categor
   return hotspots.sort((a, b) => b.intensityScore - a.intensityScore);
 }
 
+
 /**
  * Deterministically map an issue category to its corresponding municipal department.
  * @param {string} category - The complaint category identifier or title
  * @returns {string} - The recommended municipal department name or 'Review Required'
  */
 export function getRecommendedDepartment(category) {
-  if (!category) return 'Review Required';
-  const cat = String(category).trim().toLowerCase();
-
-  if (cat === 'pothole') {
-    return 'Public Works Department';
-  }
-  if (cat === 'damaged_road' || cat === 'damaged road' || cat === 'road') {
-    return 'Public Works Department';
-  }
-  if (cat === 'garbage' || cat === 'garbage & waste' || cat === 'waste' || cat === 'litter') {
-    return 'Waste Management Department';
-  }
-  if (cat === 'streetlight' || cat === 'street lighting' || cat === 'broken streetlight' || cat === 'lighting') {
-    return 'Electrical / Street Lighting Department';
-  }
-  if (cat === 'water_leakage' || cat === 'water leakage' || cat === 'water' || cat === 'pipe') {
-    return 'Water & Sewerage Department';
-  }
-
-  return 'Review Required';
+  return departmentRoutingService.getDepartmentForCategory(category);
 }
 
